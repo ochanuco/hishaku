@@ -51,6 +51,7 @@ agent ごとの記録の置き場所と起こし方:
 番号の件名・repo・ブランチ・agent を出して確かめ（`-y` で省く）、Orca に worktree `hs-<number>` を立てて `hs resume <number>` を走らせる端末を開く。
 
 - repo を省くと meta の repo を使う。Orca に登録された repo から remote（無ければ path の末尾）で探す。
+- meta にも引数にも repo が無ければ worktree を作らず、その端末のカレントで `hs resume <number>` と同じように前の会話を開く。
 - worktree `hs-<number>` が既にあれば作らずに使う。無ければ meta のブランチで作る（agent は起こさない）。
 
 ### agent を呼ぶ側が起こすとき
