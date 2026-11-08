@@ -18,18 +18,27 @@ import (
 // ErrNotFound は番号や記録が無いときに返る。
 var ErrNotFound = errors.New("not found")
 
-// ConflictError は 409 のときに返る。貸し出しの取り合いでは持ち主と期限が入る。
+// 409 の本文の error。
+const (
+	CodeLeaseHeld     = "lease_held"
+	CodeLeaseMismatch = "lease_mismatch"
+)
+
+// ConflictError は 409 のときに返る。lease_held では持ち主と期限、lease_mismatch では今の持ち主・世代・期限が入る。
+// lease_mismatch の holder と lease_expires_at は null のことがあり、そのときは空文字。
 type ConflictError struct {
+	Code           string
 	Holder         string
+	Generation     int64
 	LeaseExpiresAt string
 	Body           string
 }
 
 func (e *ConflictError) Error() string {
 	if e.Holder != "" {
-		return fmt.Sprintf("conflict: held by %s until %s", e.Holder, e.LeaseExpiresAt)
+		return fmt.Sprintf("%s: held by %s until %s", e.Code, e.Holder, e.LeaseExpiresAt)
 	}
-	return "conflict"
+	return "conflict: " + e.Code
 }
 
 // IsConflict は err が 409 由来かを返す。
@@ -141,11 +150,13 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	case res.StatusCode == http.StatusConflict:
 		ce := &ConflictError{Body: string(data)}
 		var v struct {
-			Holder         string `json:"holder"`
-			LeaseExpiresAt string `json:"lease_expires_at"`
+			Error          string  `json:"error"`
+			Holder         *string `json:"holder"`
+			Generation     int64   `json:"generation"`
+			LeaseExpiresAt *string `json:"lease_expires_at"`
 		}
 		if json.Unmarshal(data, &v) == nil {
-			ce.Holder, ce.LeaseExpiresAt = v.Holder, v.LeaseExpiresAt
+			ce.Code, ce.Holder, ce.Generation, ce.LeaseExpiresAt = v.Error, Str(v.Holder), v.Generation, Str(v.LeaseExpiresAt)
 		}
 		return res, data, ce
 	case res.StatusCode < 200 || res.StatusCode >= 300:
@@ -211,9 +222,10 @@ func (c *Client) PutTranscript(ctx context.Context, number int, holder string, g
 	return err
 }
 
-// CreateFork は取られた側の記録を枝として残し、その key を返す。
-func (c *Client) CreateFork(ctx context.Context, number int, data []byte) (string, error) {
-	_, body, err := c.do(ctx, http.MethodPost, c.path(number, "/forks"), nil, bytes.NewReader(data), "application/x-ndjson")
+// CreateFork は取られた側の記録を枝として残し、その key を返す。holder は預けた側として記録に残る。
+func (c *Client) CreateFork(ctx context.Context, number int, holder string, data []byte) (string, error) {
+	q := url.Values{"holder": {holder}}
+	_, body, err := c.do(ctx, http.MethodPost, c.path(number, "/forks"), q, bytes.NewReader(data), "application/x-ndjson")
 	if err != nil {
 		return "", err
 	}

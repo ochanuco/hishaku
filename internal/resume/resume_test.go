@@ -212,6 +212,39 @@ func TestResumeHeld(t *testing.T) {
 	}
 }
 
+func TestResumeHeldBySelf(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Holder: "box-a"}
+	e := setup(t, s, 0)
+	_, err := Run(context.Background(), e.opts)
+	var he *HeldError
+	if !errors.As(err, &he) || !strings.Contains(err.Error(), "--takeover で取り直せます") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestResumeSkipsEmptyTranscript(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", SessionID: "sid-1"}
+	e := setup(t, s, 0)
+	p := filepath.Join(e.home, "projects", "-work", "sid-1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.opts.Adapter = func(string) (agent.Adapter, error) {
+		return &agent.Claude{Home: e.home, Cwd: "/work", Bin: "true"}, nil
+	}
+	var log strings.Builder
+	e.opts.Log = &log
+	if code, err := Run(context.Background(), e.opts); err != nil || code != 0 {
+		t.Fatalf("run = %d %v", code, err)
+	}
+	if n := len(e.fake.CallsTo("PUT", "/transcript")); n != 0 || log.Len() != 0 {
+		t.Fatalf("puts = %d log = %q", n, log.String())
+	}
+}
+
 func TestResumeTakeover(t *testing.T) {
 	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Holder: "other-box", Transcript: []byte("a\n")}
 	e := setup(t, s, 0)
@@ -251,8 +284,8 @@ func TestResumeStolenGoesToForks(t *testing.T) {
 	if string(s.Transcript) != "a\nb\n" {
 		t.Fatalf("transcript = %q", s.Transcript)
 	}
-	if len(s.Forks) != 1 || string(s.Forks[0]) != "a\nb\nc\n" {
-		t.Fatalf("forks = %q", s.Forks)
+	if len(s.Forks) != 1 || string(s.Forks[0]) != "a\nb\nc\n" || s.ForkHolders[0] != "box-a" {
+		t.Fatalf("forks = %q holders = %q", s.Forks, s.ForkHolders)
 	}
 }
 

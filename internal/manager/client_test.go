@@ -33,7 +33,7 @@ func TestClient(t *testing.T) {
 
 	_, err = c.AcquireLease(ctx, 4821, "box-a", manager.Acquire, time.Minute)
 	var ce *manager.ConflictError
-	if !errors.As(err, &ce) || ce.Holder != "other-box" || ce.LeaseExpiresAt == "" {
+	if !errors.As(err, &ce) || ce.Code != manager.CodeLeaseHeld || ce.Holder != "other-box" || ce.LeaseExpiresAt == "" {
 		t.Fatalf("acquire conflict = %v", err)
 	}
 	l, err := c.AcquireLease(ctx, 4821, "box-a", manager.Takeover, time.Minute)
@@ -54,15 +54,22 @@ func TestClient(t *testing.T) {
 	if q := f.CallsTo("PUT", "/transcript")[0].Query; q != "generation=1&holder=box-a" {
 		t.Fatalf("put query = %s", q)
 	}
-	if err := c.PutTranscript(ctx, 4821, "box-a", 0, nil); !manager.IsConflict(err) {
+	err = c.PutTranscript(ctx, 4821, "box-a", 2, []byte("x\n"))
+	if !errors.As(err, &ce) || ce.Code != manager.CodeLeaseMismatch || ce.Holder != "box-a" || ce.Generation != 1 {
 		t.Fatalf("stale put = %v", err)
+	}
+	if ct := f.CallsTo("PUT", "/transcript")[0].Header.Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Fatalf("put content-type = %q", ct)
 	}
 	if _, err := c.RenewLease(ctx, 4821, "box-a", 1); err != nil {
 		t.Fatal(err)
 	}
-	key, err := c.CreateFork(ctx, 4821, []byte("x\n"))
+	key, err := c.CreateFork(ctx, 4821, "box-a", []byte("x\n"))
 	if err != nil || key == "" {
 		t.Fatalf("fork = %q %v", key, err)
+	}
+	if q := f.CallsTo("POST", "/forks")[0].Query; q != "holder=box-a" {
+		t.Fatalf("fork query = %s", q)
 	}
 	sid := "new-sid"
 	if m, err := c.PatchSession(ctx, 4821, manager.Patch{SessionID: &sid}); err != nil || manager.Str(m.SessionID) != sid {
@@ -73,5 +80,13 @@ func TestClient(t *testing.T) {
 	}
 	if err := c.ReleaseLease(ctx, 4821, "box-a", 1); err != nil {
 		t.Fatal(err)
+	}
+	if body := f.CallsTo("DELETE", "/lease")[0].Body; body != `{"generation":1,"holder":"box-a"}` {
+		t.Fatalf("release body = %s", body)
+	}
+	// 返した後の lease_mismatch は holder と lease_expires_at が null で返る。
+	err = c.ReleaseLease(ctx, 4821, "box-a", 1)
+	if !errors.As(err, &ce) || ce.Code != manager.CodeLeaseMismatch || ce.Holder != "" || ce.LeaseExpiresAt != "" {
+		t.Fatalf("second release = %v", err)
 	}
 }

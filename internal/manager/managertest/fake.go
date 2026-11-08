@@ -24,7 +24,11 @@ type Session struct {
 	Generation int64
 	Transcript []byte // nil なら記録なし
 	Forks      [][]byte
+	// ForkHolders は forks に付いてきた holder の query。
+	ForkHolders []string
 }
+
+const leaseExpiresAt = "2026-01-01T00:10:00.000Z"
 
 // Call は受けたリクエストの記録。
 type Call struct {
@@ -87,12 +91,19 @@ func nullable(s string) any {
 	return s
 }
 
+func leaseExpiresAtIf(holder string) string {
+	if holder == "" {
+		return ""
+	}
+	return leaseExpiresAt
+}
+
 func (f *Fake) meta(n int, s *Session) map[string]any {
 	return map[string]any{
 		"number": n, "post_id": "post-1", "agent": s.Agent, "session_id": nullable(s.SessionID),
 		"title": s.Title, "repo": nullable(s.Repo), "branch": nullable(s.Branch), "holder": nullable(s.Holder),
-		"generation": s.Generation, "lease_expires_at": "2026-01-01T00:10:00Z",
-		"expires_at": "2026-02-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+		"generation": s.Generation, "lease_expires_at": nullable(leaseExpiresAtIf(s.Holder)),
+		"expires_at": "2026-02-01T00:00:00.000Z", "updated_at": "2026-01-01T00:00:00.000Z",
 	}
 }
 
@@ -122,6 +133,17 @@ func (f *Fake) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &in)
 	held := func(holder string, gen int64) bool { return s.Holder == holder && s.Generation == gen }
+	mismatch := func() {
+		writeJSON(w, 409, map[string]any{"error": "lease_mismatch", "holder": nullable(s.Holder), "generation": s.Generation, "lease_expires_at": nullable(leaseExpiresAtIf(s.Holder))})
+	}
+	// Manager は記録の本文に Content-Length を求める。
+	lengthRequired := func() bool {
+		if r.ContentLength <= 0 {
+			writeJSON(w, 411, map[string]string{"error": "length_required"})
+			return true
+		}
+		return false
+	}
 
 	switch {
 	case rest == "" && r.Method == http.MethodGet:
@@ -133,28 +155,37 @@ func (f *Fake) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, f.meta(n, s))
 	case rest == "transcript" && r.Method == http.MethodGet:
 		if s.Transcript == nil {
-			writeJSON(w, 404, map[string]string{"error": "not_found"})
+			writeJSON(w, 404, map[string]string{"error": "no_transcript"})
 			return
 		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("X-Hishaku-Generation", strconv.FormatInt(s.Generation, 10))
 		_, _ = w.Write(s.Transcript)
 	case rest == "transcript" && r.Method == http.MethodPut:
 		gen, _ := strconv.ParseInt(r.URL.Query().Get("generation"), 10, 64)
+		if lengthRequired() {
+			return
+		}
 		if !held(r.URL.Query().Get("holder"), gen) {
-			writeJSON(w, 409, map[string]string{"error": "lease_mismatch"})
+			mismatch()
 			return
 		}
 		s.Transcript = body
 		if f.AfterPut != nil {
 			f.AfterPut(s)
 		}
-		writeJSON(w, 200, map[string]any{"generation": s.Generation})
+		w.Header().Set("X-Hishaku-Generation", strconv.FormatInt(gen, 10))
+		w.WriteHeader(204)
 	case rest == "forks" && r.Method == http.MethodPost:
+		if lengthRequired() {
+			return
+		}
+		s.ForkHolders = append(s.ForkHolders, r.URL.Query().Get("holder"))
 		s.Forks = append(s.Forks, body)
 		writeJSON(w, 201, map[string]string{"key": fmt.Sprintf("sessions/%d/forks/fork-%d.jsonl", n, len(s.Forks))})
 	case rest == "lease" && r.Method == http.MethodPost:
 		if in.Mode == "acquire" && s.Holder != "" {
-			writeJSON(w, 409, map[string]string{"holder": s.Holder, "lease_expires_at": "2026-01-01T00:10:00Z"})
+			writeJSON(w, 409, map[string]any{"error": "lease_held", "holder": s.Holder, "lease_expires_at": leaseExpiresAt})
 			return
 		}
 		s.Holder = in.Holder
@@ -162,13 +193,13 @@ func (f *Fake) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"generation": s.Generation, "lease_expires_at": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})
 	case rest == "lease/renew" && r.Method == http.MethodPost:
 		if !held(in.Holder, in.Generation) {
-			writeJSON(w, 409, map[string]string{"error": "lease_mismatch"})
+			mismatch()
 			return
 		}
 		writeJSON(w, 200, map[string]any{"generation": s.Generation, "lease_expires_at": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})
 	case rest == "lease" && r.Method == http.MethodDelete:
 		if !held(in.Holder, in.Generation) {
-			writeJSON(w, 409, map[string]string{"error": "lease_mismatch"})
+			mismatch()
 			return
 		}
 		s.Holder = ""

@@ -73,7 +73,12 @@ func Run(ctx context.Context, o Options) (int, error) {
 	if err != nil {
 		var ce *manager.ConflictError
 		if errors.As(err, &ce) {
-			return 1, &HeldError{Number: o.Number, Holder: ce.Holder, LeaseExpiresAt: ce.LeaseExpiresAt}
+			he := &HeldError{Number: o.Number, Holder: ce.Holder, LeaseExpiresAt: ce.LeaseExpiresAt}
+			// Manager は期限内なら自分の貸し出しでも acquire を断る。前の hs が落ちて返さなかった場合にこうなる。
+			if ce.Holder == o.Holder {
+				return 1, fmt.Errorf("%w。持ち主はこの機械なので、前の hs が残っていなければ --takeover で取り直せます", he)
+			}
+			return 1, he
 		}
 		return 1, fmt.Errorf("貸し出しを受けられません: %w", err)
 	}
@@ -252,6 +257,11 @@ func (s *session) sync(ctx context.Context, final bool) {
 		s.renew(ctx, final)
 		return
 	}
+	// Manager は長さ 0 の本文を 411 で断るうえ、空の記録は預ける中身も無い。
+	if len(data) == 0 {
+		s.renew(ctx, final)
+		return
+	}
 	sum := sha256.Sum256(data)
 
 	if !s.stolen && sum != s.lastSum {
@@ -271,7 +281,7 @@ func (s *session) sync(ctx context.Context, final bool) {
 	// 取られた後は 30 秒ごとに枝を増やさず、取られた時と最後にだけ預ける。
 	// forks は呼ぶたびに別の枝になるので、毎回送ると同じ会話の枝が何十本もできる。
 	if s.stolen && sum != s.forkSum && (final || s.forkSum == s.lastSum) {
-		key, err := s.o.Client.CreateFork(ctx, s.o.Number, data)
+		key, err := s.o.Client.CreateFork(ctx, s.o.Number, s.o.Holder, data)
 		if err != nil {
 			s.logf("記録を forks に預けられません: %v", err)
 			return
