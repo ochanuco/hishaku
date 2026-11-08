@@ -1,0 +1,28 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "hishaku",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	// 入口は Access を通ったものだけにするので、独自ドメインに絞る。Access のアプリと service token は chabatake が持つ
+	"workers_dev": false,
+	"preview_urls": false,
+	"routes": [
+		{
+			"pattern": "hishaku.chanu.co",
+			"custom_domain": true
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "SESSION_REGISTRY", "class_name": "SessionRegistry" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionRegistry"] }],
+	// バケットは初回に `wrangler r2 bucket create` で作る（README）。wrangler deploy は作らない
+	"r2_buckets": [
+		{ "binding": "TRANSCRIPTS", "bucket_name": "hishaku-transcripts" }
+	],
+	"observability": {
+		"enabled": true
+	}
+}
