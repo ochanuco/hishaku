@@ -18,11 +18,26 @@ export type SessionMeta = {
 	holder: string | null;
 	generation: number;
 	lease_expires_at: string | null;
+	/** 今の持ち主に返してほしいと頼んだ Commander。貸し出しが変わると null に戻る */
+	release_requested_by: string | null;
+	/** 最後に記録を PUT した時刻。まだ PUT が無ければ null */
+	pushed_at: string | null;
 	expires_at: string;
 	updated_at: string;
 };
 
-export type Lease = { generation: number; lease_expires_at: string };
+export type Lease = {
+	generation: number;
+	lease_expires_at: string;
+	release_requested_by: string | null;
+};
+
+export type ReleaseRequest = {
+	holder: string;
+	generation: number;
+	lease_expires_at: string;
+	release_requested_by: string;
+};
 
 export type CreateInput = {
 	post_id: string;
@@ -63,6 +78,7 @@ export type LeaseMismatch = {
 	generation: number;
 	lease_expires_at: string | null;
 };
+export type LeaseFree = { kind: "lease_free" };
 export type Exhausted = { kind: "exhausted" };
 
 type Row = {
@@ -77,6 +93,8 @@ type Row = {
 	generation: number;
 	lease_expires_at: number | null;
 	lease_ttl_seconds: number | null;
+	release_requested_by: string | null;
+	pushed_at: number | null;
 	expires_at: number;
 	updated_at: number;
 };
@@ -100,6 +118,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	generation INTEGER NOT NULL DEFAULT 0,
 	lease_expires_at INTEGER,
 	lease_ttl_seconds INTEGER,
+	release_requested_by TEXT,
+	pushed_at INTEGER,
 	expires_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL
 );
@@ -121,6 +141,8 @@ const toMeta = (row: Row): SessionMeta => ({
 	generation: row.generation,
 	lease_expires_at:
 		row.lease_expires_at === null ? null : iso(row.lease_expires_at),
+	release_requested_by: row.release_requested_by,
+	pushed_at: row.pushed_at === null ? null : iso(row.pushed_at),
 	expires_at: iso(row.expires_at),
 	updated_at: iso(row.updated_at),
 });
@@ -136,6 +158,21 @@ export const createRegistry = (
 	const now = options.now ?? Date.now;
 	const randomNumber = options.randomNumber ?? defaultRandomNumber;
 	sql.exec(SCHEMA);
+	// 列を足す前に作られた表には無いので足す
+	const columns = new Set(
+		sql
+			.exec<{ name: string }>("PRAGMA table_info(sessions)")
+			.toArray()
+			.map((c) => c.name),
+	);
+	for (const [name, type] of [
+		["release_requested_by", "TEXT"],
+		["pushed_at", "INTEGER"],
+	] as const) {
+		if (!columns.has(name)) {
+			sql.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}`);
+		}
+	}
 
 	const live = (number: number): Row | null => {
 		const row = sql
@@ -294,7 +331,7 @@ export const createRegistry = (
 			const generation = row.generation + 1;
 			const expiresAt = at + input.ttl_seconds * 1000;
 			sql.exec(
-				"UPDATE sessions SET holder = ?, generation = ?, lease_expires_at = ?, lease_ttl_seconds = ? WHERE number = ?",
+				"UPDATE sessions SET holder = ?, generation = ?, lease_expires_at = ?, lease_ttl_seconds = ?, release_requested_by = NULL WHERE number = ?",
 				input.holder,
 				generation,
 				expiresAt,
@@ -302,7 +339,40 @@ export const createRegistry = (
 				number,
 			);
 			touch(number, at);
-			return ok({ generation, lease_expires_at: iso(expiresAt) });
+			return ok({
+				generation,
+				lease_expires_at: iso(expiresAt),
+				release_requested_by: null,
+			});
+		},
+
+		/** 今の持ち主に返してほしいと頼む。持ち主は renew の応答でそれを知り、区切りで release する */
+		requestRelease(
+			number: number,
+			requester: string,
+		): Result<ReleaseRequest, NotFound | LeaseFree | LeaseMismatch> {
+			const at = now();
+			const row = live(number);
+			if (!row) return err({ kind: "not_found" });
+			if (
+				row.holder === null ||
+				row.lease_expires_at === null ||
+				row.lease_expires_at <= at
+			) {
+				return err({ kind: "lease_free" });
+			}
+			if (row.holder === requester) return err(mismatch(row));
+			sql.exec(
+				"UPDATE sessions SET release_requested_by = ? WHERE number = ?",
+				requester,
+				number,
+			);
+			return ok({
+				holder: row.holder,
+				generation: row.generation,
+				lease_expires_at: iso(row.lease_expires_at),
+				release_requested_by: requester,
+			});
 		},
 
 		renew(
@@ -324,6 +394,7 @@ export const createRegistry = (
 			return ok({
 				generation: input.generation,
 				lease_expires_at: iso(expiresAt),
+				release_requested_by: checked.value.release_requested_by,
 			});
 		},
 
@@ -334,7 +405,7 @@ export const createRegistry = (
 			const checked = fenced(number, input.holder, input.generation);
 			if (!checked.ok) return checked;
 			sql.exec(
-				"UPDATE sessions SET holder = NULL, lease_expires_at = NULL, lease_ttl_seconds = NULL WHERE number = ?",
+				"UPDATE sessions SET holder = NULL, lease_expires_at = NULL, lease_ttl_seconds = NULL, release_requested_by = NULL WHERE number = ?",
 				number,
 			);
 			touch(number, now());
@@ -354,6 +425,17 @@ export const createRegistry = (
 		/** 記録の書き込みも更新として期限を延ばす */
 		touch(number: number): void {
 			touch(number, now());
+		},
+
+		/** 正本の記録を置き換えた時刻を残す。forks は正本ではないので呼ばない */
+		markPushed(number: number): void {
+			const at = now();
+			sql.exec(
+				"UPDATE sessions SET pushed_at = ? WHERE number = ?",
+				at,
+				number,
+			);
+			touch(number, at);
 		},
 
 		expired(): number[] {

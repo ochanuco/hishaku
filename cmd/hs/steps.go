@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/ochanuco/hishaku/internal/agent"
 	"github.com/ochanuco/hishaku/internal/config"
@@ -22,7 +24,20 @@ const (
 	exitFailed = 1
 	exitHeld   = 2
 	exitStolen = 3
+	exitFree   = 5
 )
+
+// waitNotice は返してもらうのを待ち始めたことを標準エラーに 1 度出す。
+func waitNotice(stderr io.Writer, number int) func(holder string) {
+	return func(holder string) {
+		fmt.Fprintf(stderr, "hs: %d は %s が使っています。返してもらうのを待っています（Ctrl-C でやめる）\n", number, holder)
+	}
+}
+
+// interruptible は Ctrl-C と SIGTERM で終わる context を返す。待つ間だけ使う。
+func interruptible() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
 
 // stepFlags は prepare・push・renew に共通の flag と、番号の読み取りを持つ。
 type stepFlags struct {
@@ -95,8 +110,9 @@ func stateDir() (string, error) {
 }
 
 func runPrepare(args []string, stdout, stderr io.Writer) int {
-	f := newStepFlags("hs prepare", "hs prepare <number> [--holder <id>] [--cwd <dir>] [--takeover] [--json]", stderr, true)
+	f := newStepFlags("hs prepare", "hs prepare <number> [--holder <id>] [--cwd <dir>] [--takeover] [--wait] [--json]", stderr, true)
 	takeover := f.fs.Bool("takeover", false, "他の holder から貸し出しを奪う")
+	wait := f.fs.Bool("wait", false, "他が借りていれば返してほしいと頼み、返されるまで待つ")
 	asJSON := f.fs.Bool("json", false, "結果を JSON 1 行で出す")
 	number, code := f.parse(args, stderr)
 	if code >= 0 {
@@ -115,14 +131,21 @@ func runPrepare(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	p, err := loan.Prepare(context.Background(), loan.PrepareOptions{
+	ctx, stop := interruptible()
+	defer stop()
+	p, err := loan.Prepare(ctx, loan.PrepareOptions{
 		Client:   newClient(cfg),
 		Number:   number,
 		Holder:   cfg.Holder,
 		Takeover: *takeover,
+		Wait:     *wait,
+		OnWait:   waitNotice(stderr, number),
 		Adapter:  adapter,
 		StateDir: dir,
 	})
+	if errors.Is(err, context.Canceled) {
+		return fail(errors.New("返してもらうのを待つのをやめました"))
+	}
 	var he *loan.HeldError
 	if errors.As(err, &he) {
 		if *asJSON {
@@ -189,9 +212,10 @@ func runPush(args []string, stderr io.Writer) int {
 	return exitOK
 }
 
-func runRenew(args []string, stderr io.Writer) int {
-	f := newStepFlags("hs renew", "hs renew <number> --generation N [--holder <id>]", stderr, false)
+func runRenew(args []string, stdout, stderr io.Writer) int {
+	f := newStepFlags("hs renew", "hs renew <number> --generation N [--holder <id>] [--json]", stderr, false)
 	generation := f.fs.Int64("generation", 0, "hs prepare が返した世代（必須）")
+	asJSON := f.fs.Bool("json", false, "延ばした後の世代・期限・返してほしいと頼んだ Commander を JSON 1 行で出す")
 	number, code := f.parse(args, stderr)
 	if code >= 0 {
 		return code
@@ -204,7 +228,7 @@ func runRenew(args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	err = loan.Renew(context.Background(), newClient(cfg), number, cfg.Holder, *generation)
+	r, err := loan.Renew(context.Background(), newClient(cfg), number, cfg.Holder, *generation)
 	if errors.Is(err, loan.ErrStolen) {
 		fmt.Fprintln(stderr, "hs:", err)
 		return exitStolen
@@ -212,5 +236,40 @@ func runRenew(args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	if *asJSON {
+		if err := json.NewEncoder(stdout).Encode(r); err != nil {
+			return fail(err)
+		}
+	}
+	return exitOK
+}
+
+func runRequest(args []string, stdout, stderr io.Writer) int {
+	f := newStepFlags("hs request", "hs request <number> [--holder <id>] [--json]", stderr, false)
+	asJSON := f.fs.Bool("json", false, "今の持ち主・世代・期限・頼んだ Commander を JSON 1 行で出す")
+	number, code := f.parse(args, stderr)
+	if code >= 0 {
+		return code
+	}
+	fail := func(err error) int { fmt.Fprintln(stderr, "hs:", err); return exitFailed }
+	cfg, err := f.config()
+	if err != nil {
+		return fail(err)
+	}
+	r, err := loan.Request(context.Background(), newClient(cfg), number, cfg.Holder)
+	if errors.Is(err, loan.ErrFree) {
+		fmt.Fprintf(stderr, "hs: 番号 %d は%s\n", number, err)
+		return exitFree
+	}
+	if err != nil {
+		return fail(err)
+	}
+	if *asJSON {
+		if err := json.NewEncoder(stdout).Encode(r); err != nil {
+			return fail(err)
+		}
+		return exitOK
+	}
+	fmt.Fprintf(stdout, "%s に %d を返してほしいと頼みました\n", r.Holder, number)
 	return exitOK
 }

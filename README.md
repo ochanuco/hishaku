@@ -33,18 +33,19 @@ api/         Manager の API の定義（OpenAPI 3.1、api/openapi.yaml）
 
 詳しくは [`api/openapi.yaml`](api/openapi.yaml)。
 
-| メソッドと道                                               | 中身                                                                                                                                                                               |
-| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/sessions`                                        | `{ post_id, agent, title, repo?, branch? }` で番号を払い出す。同じ `post_id` の生きている番号があればそれを返す                                                                    |
-| `GET /v1/sessions?post_id=<id>`                            | `post_id` から引く                                                                                                                                                                 |
-| `GET /v1/sessions/{number}`                                | meta を返す                                                                                                                                                                        |
-| `PATCH /v1/sessions/{number}`                              | `title`・`repo`・`branch`・`session_id` を更新する                                                                                                                                 |
-| `GET /v1/sessions/{number}/transcript`                     | 正本の記録（jsonl）。無ければ 404。`X-Hishaku-Generation` に今の世代                                                                                                               |
-| `PUT /v1/sessions/{number}/transcript?holder=&generation=` | 記録を置き換える。今の貸し出しと合わなければ 409                                                                                                                                   |
-| `POST /v1/sessions/{number}/forks`                         | 取られた側の記録を枝として残し、`{ key }` を返す                                                                                                                                   |
-| `POST /v1/sessions/{number}/lease`                         | `{ holder, mode: "acquire" \| "takeover", ttl_seconds }`。acquire は持ち主がいれば 409 で `{ holder, lease_expires_at }`。通れば世代を 1 上げて `{ generation, lease_expires_at }` |
-| `POST /v1/sessions/{number}/lease/renew`                   | `{ holder, generation }` で期限を延ばす。合わなければ 409                                                                                                                          |
-| `DELETE /v1/sessions/{number}/lease`                       | `{ holder, generation }` で返す。合わなければ 409                                                                                                                                  |
+| メソッドと道                                               | 中身                                                                                                                                                                                                     |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/sessions`                                        | `{ post_id, agent, title, repo?, branch? }` で番号を払い出す。同じ `post_id` の生きている番号があればそれを返す                                                                                          |
+| `GET /v1/sessions?post_id=<id>`                            | `post_id` から引く                                                                                                                                                                                       |
+| `GET /v1/sessions/{number}`                                | meta を返す。`pushed_at` は最後に記録を PUT した時刻（forks では変わらない）、`release_requested_by` は返してほしいと頼んだ Commander                                                                    |
+| `PATCH /v1/sessions/{number}`                              | `title`・`repo`・`branch`・`session_id` を更新する                                                                                                                                                       |
+| `GET /v1/sessions/{number}/transcript`                     | 正本の記録（jsonl）。無ければ 404。`X-Hishaku-Generation` に今の世代                                                                                                                                     |
+| `PUT /v1/sessions/{number}/transcript?holder=&generation=` | 記録を置き換える。今の貸し出しと合わなければ 409                                                                                                                                                         |
+| `POST /v1/sessions/{number}/forks`                         | 取られた側の記録を枝として残し、`{ key }` を返す                                                                                                                                                         |
+| `POST /v1/sessions/{number}/lease`                         | `{ holder, mode: "acquire" \| "takeover", ttl_seconds }`。acquire は持ち主がいれば 409 で `{ holder, lease_expires_at }`。通れば世代を 1 上げて `{ generation, lease_expires_at }`                       |
+| `POST /v1/sessions/{number}/lease/renew`                   | `{ holder, generation }` で期限を延ばす。合わなければ 409。応答の `release_requested_by` に返してほしいと頼んだ Commander                                                                                |
+| `POST /v1/sessions/{number}/lease/request`                 | `{ holder }` で今の持ち主に返してほしいと頼み、`{ holder, generation, lease_expires_at, release_requested_by }` を返す。誰も持っていなければ 409 `lease_free`、頼んだ側が持ち主なら 409 `lease_mismatch` |
+| `DELETE /v1/sessions/{number}/lease`                       | `{ holder, generation }` で返す。合わなければ 409                                                                                                                                                        |
 
 `GET /health` は生存確認用。
 

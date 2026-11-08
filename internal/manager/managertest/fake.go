@@ -22,6 +22,10 @@ type Session struct {
 	Branch     string
 	Holder     string
 	Generation int64
+	// ReleaseRequestedBy は返してほしいと頼んだ Commander。借りる・返すで空に戻る。
+	ReleaseRequestedBy string
+	// PushedAt は最後に記録を PUT した時刻。空ならまだ PUT が無い。
+	PushedAt   string
 	Transcript []byte // nil なら記録なし
 	Forks      [][]byte
 	// ForkHolders は forks に付いてきた holder の query。
@@ -103,6 +107,7 @@ func (f *Fake) meta(n int, s *Session) map[string]any {
 		"number": n, "post_id": "post-1", "agent": s.Agent, "session_id": nullable(s.SessionID),
 		"title": s.Title, "repo": nullable(s.Repo), "branch": nullable(s.Branch), "holder": nullable(s.Holder),
 		"generation": s.Generation, "lease_expires_at": nullable(leaseExpiresAtIf(s.Holder)),
+		"release_requested_by": nullable(s.ReleaseRequestedBy), "pushed_at": nullable(s.PushedAt),
 		"expires_at": "2026-02-01T00:00:00.000Z", "updated_at": "2026-01-01T00:00:00.000Z",
 	}
 }
@@ -171,6 +176,7 @@ func (f *Fake) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.Transcript = body
+		s.PushedAt = time.Now().UTC().Format(time.RFC3339)
 		if f.AfterPut != nil {
 			f.AfterPut(s)
 		}
@@ -190,19 +196,32 @@ func (f *Fake) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Holder = in.Holder
 		s.Generation++
-		writeJSON(w, 200, map[string]any{"generation": s.Generation, "lease_expires_at": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})
+		s.ReleaseRequestedBy = ""
+		writeJSON(w, 200, map[string]any{"generation": s.Generation, "lease_expires_at": time.Now().Add(time.Minute).UTC().Format(time.RFC3339), "release_requested_by": nil})
 	case rest == "lease/renew" && r.Method == http.MethodPost:
 		if !held(in.Holder, in.Generation) {
 			mismatch()
 			return
 		}
-		writeJSON(w, 200, map[string]any{"generation": s.Generation, "lease_expires_at": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})
+		writeJSON(w, 200, map[string]any{"generation": s.Generation, "lease_expires_at": time.Now().Add(time.Minute).UTC().Format(time.RFC3339), "release_requested_by": nullable(s.ReleaseRequestedBy)})
+	case rest == "lease/request" && r.Method == http.MethodPost:
+		if s.Holder == "" {
+			writeJSON(w, 409, map[string]string{"error": "lease_free"})
+			return
+		}
+		if s.Holder == in.Holder {
+			mismatch()
+			return
+		}
+		s.ReleaseRequestedBy = in.Holder
+		writeJSON(w, 200, map[string]any{"holder": s.Holder, "generation": s.Generation, "lease_expires_at": leaseExpiresAt, "release_requested_by": in.Holder})
 	case rest == "lease" && r.Method == http.MethodDelete:
 		if !held(in.Holder, in.Generation) {
 			mismatch()
 			return
 		}
 		s.Holder = ""
+		s.ReleaseRequestedBy = ""
 		w.WriteHeader(204)
 	default:
 		http.NotFound(w, r)

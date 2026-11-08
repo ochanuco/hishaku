@@ -248,6 +248,43 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/LeaseMismatch" }
+  /v1/sessions/{number}/lease/request:
+    parameters:
+      - $ref: "#/components/parameters/Number"
+    post:
+      tags: [lease]
+      operationId: requestRelease
+      summary: 返してほしいと頼む
+      description: |
+        今の持ち主の貸し出しに `release_requested_by` として頼んだ側を載せる。持ち主は renew の応答でそれを知り、区切りで返す。
+        頼んだ側は返されるのを待って acquire する。貸し出しは変えない。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [holder]
+              properties:
+                holder:
+                  $ref: "#/components/schemas/Holder"
+                  description: 頼む側の Commander
+      responses:
+        "200":
+          description: 頼んだ
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRequested" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 誰も持っていない（期限切れを含む、`lease_free`）か、頼んだ側が今の持ち主（`lease_mismatch`）
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/LeaseFree"
+                  - $ref: "#/components/schemas/LeaseMismatch"
 components:
   securitySchemes:
     accessClientId:
@@ -366,6 +403,8 @@ components:
           holder,
           generation,
           lease_expires_at,
+          release_requested_by,
+          pushed_at,
           expires_at,
           updated_at,
         ]
@@ -390,6 +429,13 @@ components:
           oneOf:
             - $ref: "#/components/schemas/Timestamp"
             - type: "null"
+        release_requested_by:
+          { $ref: "#/components/schemas/ReleaseRequestedBy" }
+        pushed_at:
+          description: 最後に記録を PUT した時刻。まだ PUT が無ければ null。forks では変わらない
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
         expires_at:
           $ref: "#/components/schemas/Timestamp"
           description: 番号の期限（updated_at から 30 日）
@@ -407,12 +453,30 @@ components:
       properties:
         holder: { $ref: "#/components/schemas/Holder" }
         generation: { $ref: "#/components/schemas/Generation" }
+    ReleaseRequestedBy:
+      type: [string, "null"]
+      description: 今の持ち主に返してほしいと頼んだ Commander。acquire・takeover・返却で null に戻る
     Lease:
       type: object
-      required: [generation, lease_expires_at]
+      required: [generation, lease_expires_at, release_requested_by]
       properties:
         generation: { $ref: "#/components/schemas/Generation" }
         lease_expires_at: { $ref: "#/components/schemas/Timestamp" }
+        release_requested_by:
+          { $ref: "#/components/schemas/ReleaseRequestedBy" }
+    ReleaseRequested:
+      type: object
+      required: [holder, generation, lease_expires_at, release_requested_by]
+      properties:
+        holder: { $ref: "#/components/schemas/Holder" }
+        generation: { $ref: "#/components/schemas/Generation" }
+        lease_expires_at: { $ref: "#/components/schemas/Timestamp" }
+        release_requested_by: { $ref: "#/components/schemas/Holder" }
+    LeaseFree:
+      type: object
+      required: [error]
+      properties:
+        error: { const: lease_free }
     LeaseHeld:
       type: object
       required: [error, holder, lease_expires_at]
