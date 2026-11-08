@@ -51,6 +51,9 @@ type Options struct {
 // ErrCanceled は確かめで断られたときに返る。
 var ErrCanceled = errors.New("取りやめました")
 
+// ErrNoRepo は meta にも引数にも repo が無いときに返る。repo を触らずに会話だけを続ける投稿で起きる。
+var ErrNoRepo = errors.New("repo が分かりません")
+
 // WorktreeName は番号から worktree の名前を作る。
 func WorktreeName(number int) string { return fmt.Sprintf("hs-%d", number) }
 
@@ -72,7 +75,7 @@ func Run(ctx context.Context, o Options) error {
 	fmt.Fprintf(o.Out, "番号:     %d\n件名:     %s\nrepo:     %s\nブランチ: %s\nagent:    %s\n",
 		meta.Number, meta.Title, orDash(repo), orDash(branch), meta.Agent)
 	if repo == "" {
-		return errors.New("repo が分かりません。hs open <org/repo> <number> で指定してください")
+		return ErrNoRepo
 	}
 	if !o.Yes {
 		fmt.Fprint(o.Out, "この内容で開きますか？ [y/N] ")

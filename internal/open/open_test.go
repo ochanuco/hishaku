@@ -117,7 +117,7 @@ func TestOpenConfirm(t *testing.T) {
 
 func TestOpenErrors(t *testing.T) {
 	o, _, _ := setup(t, &managertest.Session{Agent: "claude"})
-	if err := Run(context.Background(), o); err == nil || !strings.Contains(err.Error(), "repo") {
+	if err := Run(context.Background(), o); !errors.Is(err, ErrNoRepo) {
 		t.Fatalf("no repo: %v", err)
 	}
 	o.Repo = "example-org/missing"

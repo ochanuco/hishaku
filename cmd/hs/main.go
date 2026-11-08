@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -210,6 +211,11 @@ func runOpen(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		In:     stdin,
 		Out:    stdout,
 	})
+	if errors.Is(err, open.ErrNoRepo) {
+		// worktree を作れないので、この端末のカレントで前の会話を開く
+		fmt.Fprintf(stderr, "hs: repo が無いので、この端末で開きます（repo で開くなら hs open <org/repo> %d）\n", number)
+		return runResume([]string{strconv.Itoa(number)}, stderr)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "hs:", err)
 		return 1
