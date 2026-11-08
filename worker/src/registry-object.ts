@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { handleApi } from "./api.ts";
+import { handleMcp } from "./mcp.ts";
 import { createRegistry, type Registry } from "./registry.ts";
 import { deleteSessionObjects } from "./transcripts.ts";
 
@@ -17,6 +18,12 @@ export class SessionRegistry extends DurableObject<Env> {
 	}
 
 	override async fetch(request: Request): Promise<Response> {
+		if (new URL(request.url).pathname === "/mcp") {
+			return handleMcp(request, {
+				registry: this.registry,
+				bucket: this.env.TRANSCRIPTS,
+			});
+		}
 		return handleApi(request, {
 			registry: this.registry,
 			bucket: this.env.TRANSCRIPTS,
