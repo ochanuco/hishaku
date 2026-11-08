@@ -52,12 +52,12 @@ func (c *Claude) PlacePath(sessionID string, _ []byte) (string, error) {
 	return c.path(sessionID), nil
 }
 
-func (c *Claude) ResumeCommand(sessionID string) []string {
-	return []string{c.Bin, "-r", sessionID}
+func (c *Claude) ResumeCommand(sessionID string, extra []string) []string {
+	return append([]string{c.Bin, "-r", sessionID}, extra...)
 }
 
-func (c *Claude) NewCommand(sessionID string) []string {
-	return []string{c.Bin, "--session-id", sessionID}
+func (c *Claude) NewCommand(sessionID string, extra []string) []string {
+	return append([]string{c.Bin, "--session-id", sessionID}, extra...)
 }
 
 func (c *Claude) NewSessionID() (string, error) { return NewUUID() }

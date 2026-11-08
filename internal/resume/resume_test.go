@@ -144,6 +144,18 @@ func TestResumeExisting(t *testing.T) {
 	}
 }
 
+func TestResumePassesExtraArgs(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Transcript: []byte("a\n")}
+	e := setup(t, s, 0)
+	e.opts.Extra = []string{"--permission-mode", "auto"}
+	if code, err := Run(context.Background(), e.opts); err != nil || code != 0 {
+		t.Fatalf("run = %d %v", code, err)
+	}
+	if r := e.readRecord(t); strings.Join(r.Args, " ") != "-r sid-1 --permission-mode auto" {
+		t.Fatalf("args = %v", r.Args)
+	}
+}
+
 func TestResumeSyncsWhileRunning(t *testing.T) {
 	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Transcript: []byte("a\n")}
 	e := setup(t, s, 300*time.Millisecond)

@@ -71,12 +71,16 @@ func (c *Codex) PlacePath(sessionID string, data []byte) (string, error) {
 	return filepath.Join(c.sessionsDir(), t.Format("2006"), t.Format("01"), t.Format("02"), name), nil
 }
 
-func (c *Codex) ResumeCommand(sessionID string) []string {
-	return []string{c.Bin, "resume", sessionID}
+// ResumeCommand は追加の引数を resume より前に置く。-a や -s は codex 自体の option なので。
+func (c *Codex) ResumeCommand(sessionID string, extra []string) []string {
+	argv := append([]string{c.Bin}, extra...)
+	return append(argv, "resume", sessionID)
 }
 
 // NewCommand は ID を渡さない。Codex は新規のセッション ID を外から指定できない。
-func (c *Codex) NewCommand(string) []string { return []string{c.Bin} }
+func (c *Codex) NewCommand(_ string, extra []string) []string {
+	return append([]string{c.Bin}, extra...)
+}
 
 func (c *Codex) NewSessionID() (string, error) { return "", nil }
 
