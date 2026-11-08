@@ -6,6 +6,8 @@ agent（Claude Code、Codex）のセッションを 4 桁の番号で Manager �
 
 mise の `github:` バックエンドで GitHub Releases のバイナリを入れる。darwin/arm64、linux/amd64、linux/arm64 がある。
 
+リリースは `cmd/`・`internal/`・`go.mod`・`go.sum`・`.goreleaser.yaml` の変更が main に入ると、`go-release` の workflow がパッチ版を上げて出す。minor や major を上げるときは、その workflow を手動で実行して `bump` を選ぶ。
+
 ```sh
 mise use -g github:ochanuco/hishaku
 ```
