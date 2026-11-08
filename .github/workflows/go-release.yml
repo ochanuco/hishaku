@@ -1,12 +1,30 @@
 name: go-release
 
+# hs のコードが main に入ったら、パッチ版を上げてリリースする。minor を上げるときは手動実行で bump を選ぶ。
+# GITHUB_TOKEN で push したタグは別の workflow を起こさないので、タグ打ちと GoReleaser を同じ job で行う
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths:
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
+      - .goreleaser.yaml
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 上げる桁
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
+
+concurrency:
+  group: go-release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,6 +37,22 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
+      - name: タグを打つ
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+        run: |
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          IFS=. read -r major minor patch <<<"${latest#v}"
+          case "$BUMP" in
+            major) next="v$((major + 1)).0.0" ;;
+            minor) next="v${major}.$((minor + 1)).0" ;;
+            *) next="v${major}.${minor}.$((patch + 1))" ;;
+          esac
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$next" -m "$next"
+          git push origin "$next"
+          echo "tagged $next"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
