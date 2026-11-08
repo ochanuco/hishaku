@@ -1,0 +1,51 @@
+name: deploy
+run-name: deploy hishaku @ ${{ inputs.ref || github.sha }}
+
+# main への push で本番に出す。承認は deploy-plan が危ないと判定したとき（前回の記録なし・ロールバック）だけ、
+# Environment production-approval で止まる。手動実行はロールバック用
+on:
+  push:
+    branches: [main]
+    paths:
+      - worker/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/deploy/production.env.op
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: デプロイする ref（main、または main 上のコミット SHA。古い SHA はロールバック）
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+# run 全体を直列にする。名前は deploy.yml のジョブの concurrency（deploy-production）と変える
+concurrency:
+  group: deploy-run-production
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    uses: ochanuco/.github/.github/workflows/deploy-plan.yml@336944e6c5548c749312671795a28803c5d975da # v1.6.0
+    permissions:
+      contents: read
+      actions: read
+    with:
+      ref: ${{ inputs.ref || 'main' }}
+      approval-environment: production-approval
+      # Durable Object の migration は wrangler deploy が当てる。消す・名前を変えるものは戻せないので、変わったら承認で止める
+      notices: |
+        worker/wrangler.jsonc=Durable Object の migrations が変わっていないかを確かめる
+  deploy:
+    needs: plan
+    uses: ochanuco/.github/.github/workflows/deploy.yml@336944e6c5548c749312671795a28803c5d975da # v1.6.0
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      approval-environment: ${{ needs.plan.outputs.approval-environment }}
+      op-env-file: .github/deploy/production.env.op
+      run: worker/scripts/deploy.sh production
+    secrets: inherit

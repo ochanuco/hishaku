@@ -1,0 +1,454 @@
+openapi: 3.1.0
+info:
+  title: hishaku Manager
+  version: 1.0.0
+  description: |
+    agent のセッションを 4 桁の番号で預かる Manager の API。
+    認証は Cloudflare Access の service token（`CF-Access-Client-Id` / `CF-Access-Client-Secret`）で、
+    Worker は Access を通った要求だけを受ける前提で自前の認証を持たない。
+    番号は最後の更新から 30 日で期限が切れ、meta と記録が消える。期限の切れた番号は 404 になる。
+servers:
+  - url: https://hishaku.example.com
+security:
+  - accessClientId: []
+    accessClientSecret: []
+tags:
+  - name: sessions
+  - name: transcript
+  - name: lease
+paths:
+  /v1/sessions:
+    post:
+      tags: [sessions]
+      operationId: createSession
+      summary: 番号を払い出す
+      description: 同じ `post_id` の生きている番号があれば、新しく作らずにそれを 200 で返す（冪等）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSessionRequest" }
+      responses:
+        "201":
+          description: 新しい番号を払い出した
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionMeta" }
+        "200":
+          description: 同じ post_id の生きている番号を返した
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionMeta" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "503":
+          description: 空いている番号が無い
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [sessions]
+      operationId: findSessionByPostId
+      summary: post_id から引く
+      parameters:
+        - name: post_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/PostId" }
+      responses:
+        "200":
+          description: 生きている番号の meta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionMeta" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/sessions/{number}:
+    parameters:
+      - $ref: "#/components/parameters/Number"
+    get:
+      tags: [sessions]
+      operationId: getSession
+      summary: meta を返す
+      responses:
+        "200":
+          description: meta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionMeta" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [sessions]
+      operationId: updateSession
+      summary: title・repo・branch・session_id を更新する
+      description: 渡した項目だけを変える。`repo`・`branch`・`session_id` は null で空にできる。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateSessionRequest" }
+      responses:
+        "200":
+          description: 更新後の meta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionMeta" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/sessions/{number}/transcript:
+    parameters:
+      - $ref: "#/components/parameters/Number"
+    get:
+      tags: [transcript]
+      operationId: getTranscript
+      summary: 正本の記録（jsonl）を返す
+      responses:
+        "200":
+          description: 記録
+          headers:
+            X-Hishaku-Generation:
+              $ref: "#/components/headers/Generation"
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+        "404":
+          description: 番号が無い（`not_found`）か、記録がまだ無い（`no_transcript`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      tags: [transcript]
+      operationId: putTranscript
+      summary: 記録を置き換える
+      description: |
+        `holder` と `generation` が今の貸し出しと合うときだけ置き換える。
+        貸し出しの期限が過ぎていても、その後に誰も借りていなければ（世代が変わっていなければ）通る。
+        本文には Content-Length が要る。
+      parameters:
+        - $ref: "#/components/parameters/HolderQuery"
+        - $ref: "#/components/parameters/GenerationQuery"
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema: { type: string }
+      responses:
+        "204":
+          description: 置き換えた
+          headers:
+            X-Hishaku-Generation:
+              $ref: "#/components/headers/Generation"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/LeaseMismatch" }
+        "411": { $ref: "#/components/responses/LengthRequired" }
+  /v1/sessions/{number}/forks:
+    parameters:
+      - $ref: "#/components/parameters/Number"
+    post:
+      tags: [transcript]
+      operationId: createFork
+      summary: 取られた側の記録を枝として残す
+      description: |
+        貸し出しを確かめずに受ける。`sessions/{number}/forks/<UTC の yyyymmdd-hhmmss>.jsonl` に置き、
+        同じ秒に既にあれば `-2`、`-3` と後ろに付けて上書きしない。本文には Content-Length が要る。
+      parameters:
+        - name: holder
+          in: query
+          required: false
+          description: 預けた Commander の ID。記録の custom metadata に残す
+          schema: { $ref: "#/components/schemas/Holder" }
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema: { type: string }
+      responses:
+        "201":
+          description: 残した
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    type: string
+                    description: R2 の key
+                    examples: ["sessions/1234/forks/20260101-120000.jsonl"]
+        "404": { $ref: "#/components/responses/NotFound" }
+        "411": { $ref: "#/components/responses/LengthRequired" }
+  /v1/sessions/{number}/lease:
+    parameters:
+      - $ref: "#/components/parameters/Number"
+    post:
+      tags: [lease]
+      operationId: acquireLease
+      summary: 借りる
+      description: |
+        `acquire` は誰も持っていない（期限切れを含む）ときだけ通る。持ち主が自分でも、期限内なら 409 を返す。
+        `takeover` は持ち主がいても奪う。どちらも通れば世代を 1 上げる。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LeaseRequest" }
+      responses:
+        "200":
+          description: 借りた
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lease" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: acquire で、持ち主がいる
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LeaseHeld" }
+    delete:
+      tags: [lease]
+      operationId: releaseLease
+      summary: 返す
+      description: 持ち主を空にする。世代は変えない。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FencedRequest" }
+      responses:
+        "204":
+          description: 返した
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/LeaseMismatch" }
+  /v1/sessions/{number}/lease/renew:
+    parameters:
+      - $ref: "#/components/parameters/Number"
+    post:
+      tags: [lease]
+      operationId: renewLease
+      summary: 期限を延ばす
+      description: 今から `ttl_seconds`（省けば借りたときの値）だけ延ばす。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/FencedRequest"
+                - type: object
+                  properties:
+                    ttl_seconds: { $ref: "#/components/schemas/TtlSeconds" }
+      responses:
+        "200":
+          description: 延ばした
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lease" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/LeaseMismatch" }
+components:
+  securitySchemes:
+    accessClientId:
+      type: apiKey
+      in: header
+      name: CF-Access-Client-Id
+    accessClientSecret:
+      type: apiKey
+      in: header
+      name: CF-Access-Client-Secret
+  parameters:
+    Number:
+      name: number
+      in: path
+      required: true
+      description: 4 桁の番号。範囲外や数字でないものは 404
+      schema: { $ref: "#/components/schemas/Number" }
+    HolderQuery:
+      name: holder
+      in: query
+      required: true
+      schema: { $ref: "#/components/schemas/Holder" }
+    GenerationQuery:
+      name: generation
+      in: query
+      required: true
+      schema: { $ref: "#/components/schemas/Generation" }
+  headers:
+    Generation:
+      description: 今の世代
+      schema: { $ref: "#/components/schemas/Generation" }
+  responses:
+    InvalidRequest:
+      description: 入力が正しくない
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/InvalidRequest" }
+    NotFound:
+      description: 番号が無いか、期限が切れた
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LeaseMismatch:
+      description: holder と generation が今の貸し出しと合わない（取られた、または返した後）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/LeaseMismatch" }
+    LengthRequired:
+      description: 本文に Content-Length が無い
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Number:
+      type: integer
+      minimum: 1000
+      maximum: 9999
+    PostId:
+      type: string
+      minLength: 1
+      maxLength: 100
+      description: Discord の投稿 ID。キーにはしない
+    Agent:
+      type: string
+      enum: [claude, codex]
+    Holder:
+      type: string
+      minLength: 1
+      maxLength: 100
+      description: Commander の ID（例 `docker01`、`mac-<名前>`、`gpu-box`）
+    Generation:
+      type: integer
+      minimum: 1
+    TtlSeconds:
+      type: integer
+      minimum: 1
+      maximum: 86400
+    Timestamp:
+      type: string
+      format: date-time
+      description: UTC の ISO 8601（ミリ秒つき）
+    CreateSessionRequest:
+      type: object
+      required: [post_id, agent, title]
+      properties:
+        post_id: { $ref: "#/components/schemas/PostId" }
+        agent: { $ref: "#/components/schemas/Agent" }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        repo:
+          {
+            type: [string, "null"],
+            minLength: 1,
+            maxLength: 200,
+            description: "`org/repo`",
+          }
+        branch: { type: [string, "null"], minLength: 1, maxLength: 255 }
+    UpdateSessionRequest:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        repo: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        branch: { type: [string, "null"], minLength: 1, maxLength: 255 }
+        session_id: { type: [string, "null"], minLength: 1, maxLength: 200 }
+    SessionMeta:
+      type: object
+      required:
+        [
+          number,
+          post_id,
+          agent,
+          session_id,
+          title,
+          repo,
+          branch,
+          holder,
+          generation,
+          lease_expires_at,
+          expires_at,
+          updated_at,
+        ]
+      properties:
+        number: { $ref: "#/components/schemas/Number" }
+        post_id: { $ref: "#/components/schemas/PostId" }
+        agent: { $ref: "#/components/schemas/Agent" }
+        session_id:
+          type: [string, "null"]
+          description: agent 側のセッション ID
+        title: { type: string }
+        repo: { type: [string, "null"] }
+        branch: { type: [string, "null"] }
+        holder:
+          type: [string, "null"]
+          description: 今の持ち主。返した後は null。期限切れでも次に借りられるまでは残る
+        generation:
+          type: integer
+          minimum: 0
+          description: 借りるたびに 1 上がる。一度も借りられていなければ 0
+        lease_expires_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+        expires_at:
+          $ref: "#/components/schemas/Timestamp"
+          description: 番号の期限（updated_at から 30 日）
+        updated_at: { $ref: "#/components/schemas/Timestamp" }
+    LeaseRequest:
+      type: object
+      required: [holder, mode, ttl_seconds]
+      properties:
+        holder: { $ref: "#/components/schemas/Holder" }
+        mode: { type: string, enum: [acquire, takeover] }
+        ttl_seconds: { $ref: "#/components/schemas/TtlSeconds" }
+    FencedRequest:
+      type: object
+      required: [holder, generation]
+      properties:
+        holder: { $ref: "#/components/schemas/Holder" }
+        generation: { $ref: "#/components/schemas/Generation" }
+    Lease:
+      type: object
+      required: [generation, lease_expires_at]
+      properties:
+        generation: { $ref: "#/components/schemas/Generation" }
+        lease_expires_at: { $ref: "#/components/schemas/Timestamp" }
+    LeaseHeld:
+      type: object
+      required: [error, holder, lease_expires_at]
+      properties:
+        error: { const: lease_held }
+        holder: { $ref: "#/components/schemas/Holder" }
+        lease_expires_at: { $ref: "#/components/schemas/Timestamp" }
+    LeaseMismatch:
+      type: object
+      required: [error, holder, generation, lease_expires_at]
+      properties:
+        error: { const: lease_mismatch }
+        holder: { type: [string, "null"], description: 今の持ち主 }
+        generation: { type: integer, minimum: 0, description: 今の世代 }
+        lease_expires_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: "`not_found`・`no_transcript`・`length_required`・`exhausted`・`method_not_allowed` など"
+        message: { type: string }
+    InvalidRequest:
+      type: object
+      required: [error, issues]
+      properties:
+        error: { const: invalid_request }
+        issues:
+          type: array
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path: { type: [string, "null"] }
+              message: { type: string }

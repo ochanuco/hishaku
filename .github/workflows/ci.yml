@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # postinstall の `wrangler types` が worker-configuration.d.ts を生成する（gitignore 済み）
+  ci:
+    uses: ochanuco/.github/.github/workflows/pnpm.yml@336944e6c5548c749312671795a28803c5d975da # v1.6.0
+    with:
+      run: |
+        pnpm run typecheck
+        pnpm run lint
+        pnpm test
+        pnpm run build
