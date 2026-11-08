@@ -59,6 +59,38 @@ curl -sS https://hishaku.example.com/v1/sessions \
   -d '{"post_id":"123","agent":"claude","title":"例"}'
 ```
 
+### MCP
+
+`POST /mcp` は、預かっているセッションを読むだけの MCP サーバー（Streamable HTTP、状態を持たない）。
+Mac 以外の端末や別の Claude Code から、番号の会話を新しいセッションに文脈として読ませるのに使う。`claude -r` で再開するのとは別の使い方。
+API と同じ Access の後ろにあり、自前の認証は持たない。
+
+| 道具            | 引数                                                  | 返すもの                                                                                                                       |
+| --------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `list_sessions` | `limit`（既定 20、最大 100）、`query`（件名に含む語） | 生きている番号を最後に更新された順に。各行は `number`・`title`・`agent`・`repo`・`branch`・`holder`・`pushed_at`・`updated_at` |
+| `get_session`   | `number`、`max_chars`（既定 20000）                   | meta と、正本の記録を要点に絞った会話。記録が無ければ meta だけ                                                                |
+
+`get_session` の会話は、Claude の jsonl と Codex の rollout を meta の `agent` で読み分け、次だけを残す。
+
+- 人の発言と agent の発言の本文（Claude Code や Codex が差し込む指示・環境の情報は除く）
+- ツール呼び出しの名前と、入力の短い要約
+- ツールのエラーの 1 行（ツールの出力そのものは省く）
+
+`max_chars` を超える分は古い側から削り、新しい側を残して、削ったことを会話の先頭に書く。
+
+返す前に、よく知られた形の token（`ghp_` などの GitHub の token、`github_pat_`、1Password の `ops_`、`sk-`、Slack の `xox?-`、AWS のアクセスキー、Google の API キー、JWT、`-----BEGIN ... PRIVATE KEY-----` の塊、`CF-Access-Client-Secret:` や `Authorization:` の値）を `[redacted]` に伏せる。
+形で拾うだけなので、パスワードや独自の形の鍵など、ここに無い秘密は伏せずに返る。記録に秘密を残さないことが先で、伏せ字は保険にすぎない。
+
+Claude Code からつなぐ（Access の service token は `hs` と同じものでよい）:
+
+```sh
+claude mcp add -s user -t http hishaku https://hishaku.chanu.co/mcp \
+  -H "CF-Access-Client-Id: $HISHAKU_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $HISHAKU_ACCESS_CLIENT_SECRET"
+```
+
+`-H` は後ろの引数を続けて取るので、名前と URL の後に置く。値は追加したときに展開され、`~/.claude.json` に平文で残る。
+
 ## 開発
 
 Node 24 と pnpm（`mise install` で入る）。

@@ -275,6 +275,23 @@ export const createRegistry = (
 			return row ? toMeta(row) : null;
 		},
 
+		/** 生きている番号を、最後に更新された順に返す。query は件名に含む語（大文字と小文字は区別しない） */
+		list(options: { limit: number; query?: string }): SessionMeta[] {
+			const query = options.query ?? "";
+			return sql
+				.exec<Row>(
+					`SELECT * FROM sessions
+					 WHERE expires_at > ? AND (? = '' OR instr(lower(title), lower(?)) > 0)
+					 ORDER BY updated_at DESC, number DESC LIMIT ?`,
+					now(),
+					query,
+					query,
+					options.limit,
+				)
+				.toArray()
+				.map(toMeta);
+		},
+
 		findByPostId(postId: string): SessionMeta | null {
 			const row = sql
 				.exec<Row>(

@@ -10,7 +10,11 @@ export default {
 		if (request.method === "GET" && pathname === "/health") {
 			return Response.json({ ok: true });
 		}
-		if (pathname === "/v1" || pathname.startsWith("/v1/")) {
+		if (
+			pathname === "/v1" ||
+			pathname.startsWith("/v1/") ||
+			pathname === "/mcp"
+		) {
 			return registryOf(env).fetch(request);
 		}
 		return Response.json({ error: "not_found" }, { status: 404 });
