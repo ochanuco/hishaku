@@ -14,15 +14,15 @@ mise use -g github:ochanuco/hishaku
 
 ## 環境変数
 
-| 名前 | 中身 |
-|---|---|
-| `HISHAKU_URL` | Manager の URL。必須 |
-| `HISHAKU_ACCESS_CLIENT_ID` | Cloudflare Access の service token の Client ID。`CF-Access-Client-Id` ヘッダーで送る |
-| `HISHAKU_ACCESS_CLIENT_SECRET` | 同じく Client Secret。`CF-Access-Client-Secret` ヘッダーで送る |
-| `HISHAKU_HOLDER` | この機械の名前（Commander の ID）。既定はホスト名の最初のラベルを小文字にしたもの |
-| `ORCA_CLI_COMMAND` | `hs open` が使う orca の実行ファイル。既定は `orca` |
-| `CLAUDE_CONFIG_DIR` | Claude Code の記録の置き場所。既定は `~/.claude` |
-| `CODEX_HOME` | Codex の記録の置き場所。既定は `~/.codex` |
+| 名前                           | 中身                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------- |
+| `HISHAKU_URL`                  | Manager の URL。必須                                                                  |
+| `HISHAKU_ACCESS_CLIENT_ID`     | Cloudflare Access の service token の Client ID。`CF-Access-Client-Id` ヘッダーで送る |
+| `HISHAKU_ACCESS_CLIENT_SECRET` | 同じく Client Secret。`CF-Access-Client-Secret` ヘッダーで送る                        |
+| `HISHAKU_HOLDER`               | この機械の名前（Commander の ID）。既定はホスト名の最初のラベルを小文字にしたもの     |
+| `ORCA_CLI_COMMAND`             | `hs open` が使う orca の実行ファイル。既定は `orca`                                   |
+| `CLAUDE_CONFIG_DIR`            | Claude Code の記録の置き場所。既定は `~/.claude`                                      |
+| `CODEX_HOME`                   | Codex の記録の置き場所。既定は `~/.codex`                                             |
 
 ## コマンド
 
@@ -39,10 +39,10 @@ mise use -g github:ochanuco/hishaku
 
 agent ごとの記録の置き場所と起こし方:
 
-| agent | 記録 | 再開 | 新規 |
-|---|---|---|---|
-| claude | `$CLAUDE_CONFIG_DIR/projects/<cwd の英数字以外を - にした名前>/<session_id>.jsonl` | `claude -r <session_id>` | `claude --session-id <uuid>` |
-| codex | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<時刻>-<session_id>.jsonl` | `codex resume <session_id>` | `codex`（起こした後に記録から session_id を拾う） |
+| agent  | 記録                                                                               | 再開                        | 新規                                              |
+| ------ | ---------------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------- |
+| claude | `$CLAUDE_CONFIG_DIR/projects/<cwd の英数字以外を - にした名前>/<session_id>.jsonl` | `claude -r <session_id>`    | `claude --session-id <uuid>`                      |
+| codex  | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<時刻>-<session_id>.jsonl`                | `codex resume <session_id>` | `codex`（起こした後に記録から session_id を拾う） |
 
 ### `hs open [-y] [org/repo] <number>`
 
