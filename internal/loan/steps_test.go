@@ -266,10 +266,84 @@ func TestRenew(t *testing.T) {
 	s := &managertest.Session{Agent: "claude", SessionID: "sid-1"}
 	e := setup(t, s)
 	p := e.prepare(t)
-	if err := Renew(context.Background(), e.c, 4821, "box-a", p.Generation); err != nil {
+	r, err := Renew(context.Background(), e.c, 4821, "box-a", p.Generation)
+	if err != nil || r.Generation != p.Generation || r.ReleaseRequestedBy != nil {
+		t.Fatalf("renew = %+v %v", r, err)
+	}
+	if _, err := Request(context.Background(), e.c, 4821, "other-box"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Renew(context.Background(), e.c, 4821, "box-a", p.Generation+1); !errors.Is(err, ErrStolen) {
+	r, err = Renew(context.Background(), e.c, 4821, "box-a", p.Generation)
+	if err != nil || r.ReleaseRequestedBy == nil || *r.ReleaseRequestedBy != "other-box" {
+		t.Fatalf("renew = %+v %v", r, err)
+	}
+	if _, err := Renew(context.Background(), e.c, 4821, "box-a", p.Generation+1); !errors.Is(err, ErrStolen) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRequest(t *testing.T) {
+	s := &managertest.Session{Agent: "claude"}
+	e := setup(t, s)
+	ctx := context.Background()
+	if _, err := Request(ctx, e.c, 4821, "other-box"); !errors.Is(err, ErrFree) {
+		t.Fatalf("free = %v", err)
+	}
+	e.prepare(t)
+	if _, err := Request(ctx, e.c, 4821, "box-a"); err == nil || errors.Is(err, ErrFree) {
+		t.Fatalf("self = %v", err)
+	}
+	r, err := Request(ctx, e.c, 4821, "other-box")
+	if err != nil || r.Holder != "box-a" || r.ReleaseRequestedBy != "other-box" || r.Generation != 1 {
+		t.Fatalf("request = %+v %v", r, err)
+	}
+}
+
+func TestPrepareWaitsForRelease(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Holder: "other-box", Generation: 4}
+	e := setup(t, s)
+	// 頼まれた持ち主が区切りで返す役をする
+	go func() {
+		for len(e.fake.CallsTo("POST", "/lease/request")) == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		defer e.fake.Lock()()
+		s.Holder, s.ReleaseRequestedBy = "", ""
+	}()
+	var waited []string
+	p, err := Prepare(context.Background(), PrepareOptions{
+		Client: e.c, Number: 4821, Holder: "box-a", Adapter: e.adapter, StateDir: e.state,
+		Wait: true, WaitInterval: 10 * time.Millisecond,
+		OnWait: func(holder string) { waited = append(waited, holder) },
+	})
+	if err != nil || p.Generation != 5 {
+		t.Fatalf("prepare = %+v %v", p, err)
+	}
+	if len(waited) != 1 || waited[0] != "other-box" {
+		t.Fatalf("waited = %v", waited)
+	}
+	if calls := e.fake.CallsTo("POST", "/lease/request"); len(calls) != 1 || calls[0].Body != `{"holder":"box-a"}` {
+		t.Fatalf("request calls = %+v", calls)
+	}
+}
+
+func TestAcquireWaitStopsOnCancel(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", Holder: "other-box"}
+	e := setup(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := AcquireWait(ctx, e.c, 4821, "box-a", WaitOptions{Interval: 10 * time.Millisecond})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAcquireWaitHeldBySelfDoesNotWait(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", Holder: "box-a"}
+	e := setup(t, s)
+	_, err := AcquireWait(context.Background(), e.c, 4821, "box-a", WaitOptions{})
+	var he *HeldError
+	if !errors.As(err, &he) || len(e.fake.CallsTo("POST", "/lease/request")) != 0 {
 		t.Fatalf("err = %v", err)
 	}
 }

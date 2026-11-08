@@ -24,12 +24,14 @@ var version = "dev"
 const usage = `hs: agent のセッションを番号で預かり、別の機械で続ける
 
 使い方:
-  hs resume [--takeover] <number> [-- <agent の引数>]
+  hs resume [--takeover] [--wait|--no-wait] <number> [-- <agent の引数>]
                                        借りて agent を起こし、終わるまで記録を預ける
   hs open [-y] [org/repo] <number>     Orca に worktree hs-<number> と hs resume の端末を立てる
-  hs prepare <number> [--json]         借りて記録を置くだけ。agent は呼ぶ側が起こす
+  hs prepare <number> [--wait] [--json]
+                                       借りて記録を置くだけ。agent は呼ぶ側が起こす
   hs push <number> --generation N      agent の記録を預ける（--release で返す）
   hs renew <number> --generation N     貸し出しを延ばす
+  hs request <number>                  今の持ち主に返してほしいと頼む
   hs version                           版を出す
 
 環境変数:
@@ -66,7 +68,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "push":
 		return runPush(args[1:], stderr)
 	case "renew":
-		return runRenew(args[1:], stderr)
+		return runRenew(args[1:], stdout, stderr)
+	case "request":
+		return runRequest(args[1:], stdout, stderr)
 	}
 	fmt.Fprintf(stderr, "hs: 知らないコマンドです: %s\n\n%s", args[0], usage)
 	return 2
@@ -118,8 +122,10 @@ func runResume(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("hs resume", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	takeover := fs.Bool("takeover", false, "他の holder から貸し出しを奪う")
+	wait := fs.Bool("wait", false, "他が借りていれば返してほしいと頼み、返されるまで待つ（端末につながっていれば既定）")
+	noWait := fs.Bool("no-wait", false, "他が借りていれば待たずに 2 で終わる")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "使い方: hs resume [--takeover] <number> [-- <agent に渡す引数>]")
+		fmt.Fprintln(stderr, "使い方: hs resume [--takeover] [--wait|--no-wait] <number> [-- <agent に渡す引数>]")
 		fs.PrintDefaults()
 	}
 	args, extra := splitExtra(args)
@@ -146,11 +152,22 @@ func runResume(args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "hs:", err)
 		return 1
 	}
+	waitFor := isTerminal(os.Stdin)
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "wait" {
+			waitFor = *wait
+		}
+	})
+	if *noWait {
+		waitFor = false
+	}
 	code, err := resume.Run(context.Background(), resume.Options{
 		Client:   newClient(cfg),
 		Number:   number,
 		Holder:   cfg.Holder,
 		Takeover: *takeover,
+		Wait:     waitFor,
+		OnWait:   waitNotice(stderr, number),
 		Adapter: func(name string) (agent.Adapter, error) {
 			return agent.For(name, cwd, os.Getenv)
 		},
@@ -160,6 +177,10 @@ func runResume(args []string, stderr io.Writer) int {
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "hs:", err)
+	}
+	var he *resume.HeldError
+	if errors.As(err, &he) && he.Holder != cfg.Holder {
+		return exitHeld
 	}
 	return code
 }

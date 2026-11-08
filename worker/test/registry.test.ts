@@ -1,5 +1,7 @@
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { SESSION_TTL_MS } from "../src/registry.ts";
+import { createRegistry, SESSION_TTL_MS } from "../src/registry.ts";
 import { isolatedRegistry } from "./helpers.ts";
 
 const T0 = Date.UTC(2026, 0, 1);
@@ -123,6 +125,7 @@ describe("貸し出し", () => {
 				value: {
 					generation: 1,
 					lease_expires_at: new Date(T0 + 60_000).toISOString(),
+					release_requested_by: null,
 				},
 			});
 			const b = r.lease(1111, {
@@ -211,6 +214,86 @@ describe("貸し出し", () => {
 			});
 			// 返した後の世代では、もう renew できない
 			expect(r.renew(1111, { holder: "mac-a", generation: 1 }).ok).toBe(false);
+		});
+	});
+
+	it("返してほしいと頼むと renew と meta に頼んだ側が載り、貸し出しが変わると消える", async () => {
+		const { run } = setup();
+		await run((r) => {
+			r.create(input("p1"));
+			r.lease(1111, { holder: "mac-a", mode: "acquire", ttl_seconds: 60 });
+			expect(r.requestRelease(1111, "gpu-box")).toEqual({
+				ok: true,
+				value: {
+					holder: "mac-a",
+					generation: 1,
+					lease_expires_at: new Date(T0 + 60_000).toISOString(),
+					release_requested_by: "gpu-box",
+				},
+			});
+			const renewed = r.renew(1111, { holder: "mac-a", generation: 1 });
+			expect(renewed.ok && renewed.value.release_requested_by).toBe("gpu-box");
+			expect(r.get(1111)?.release_requested_by).toBe("gpu-box");
+
+			r.release(1111, { holder: "mac-a", generation: 1 });
+			expect(r.get(1111)?.release_requested_by).toBeNull();
+
+			r.lease(1111, { holder: "gpu-box", mode: "acquire", ttl_seconds: 60 });
+			r.requestRelease(1111, "mac-a");
+			r.lease(1111, { holder: "mac-b", mode: "takeover", ttl_seconds: 60 });
+			expect(r.get(1111)?.release_requested_by).toBeNull();
+		});
+	});
+
+	it("誰も持っていなければ lease_free、持ち主自身が頼めば lease_mismatch", async () => {
+		const { run, c } = setup();
+		await run((r) => {
+			r.create(input("p1"));
+			expect(r.requestRelease(1111, "gpu-box")).toEqual({
+				ok: false,
+				error: { kind: "lease_free" },
+			});
+			r.lease(1111, { holder: "mac-a", mode: "acquire", ttl_seconds: 60 });
+			expect(r.requestRelease(1111, "mac-a")).toEqual({
+				ok: false,
+				error: {
+					kind: "lease_mismatch",
+					holder: "mac-a",
+					generation: 1,
+					lease_expires_at: new Date(T0 + 60_000).toISOString(),
+				},
+			});
+			c.advance(60_000);
+			expect(r.requestRelease(1111, "gpu-box")).toEqual({
+				ok: false,
+				error: { kind: "lease_free" },
+			});
+			expect(r.requestRelease(2222, "gpu-box")).toEqual({
+				ok: false,
+				error: { kind: "not_found" },
+			});
+		});
+	});
+});
+
+describe("表の移行", () => {
+	it("release_requested_by と pushed_at の無い表に列を足す", async () => {
+		const stub = env.SESSION_REGISTRY.get(
+			env.SESSION_REGISTRY.idFromName(`migrate-${Date.now()}`),
+		);
+		await runInDurableObject(stub, (_instance, state) => {
+			const sql = state.storage.sql;
+			sql.exec("DROP TABLE sessions");
+			sql.exec(`CREATE TABLE sessions (
+				number INTEGER PRIMARY KEY, post_id TEXT NOT NULL, agent TEXT NOT NULL,
+				session_id TEXT, title TEXT NOT NULL, repo TEXT, branch TEXT, holder TEXT,
+				generation INTEGER NOT NULL DEFAULT 0, lease_expires_at INTEGER,
+				lease_ttl_seconds INTEGER, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+			)`);
+			const r = createRegistry(sql, { randomNumber: () => 4321 });
+			r.create(input("p1"));
+			expect(r.get(4321)?.release_requested_by).toBeNull();
+			expect(r.get(4321)?.pushed_at).toBeNull();
 		});
 	});
 });

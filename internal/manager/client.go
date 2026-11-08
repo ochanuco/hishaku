@@ -22,6 +22,7 @@ var ErrNotFound = errors.New("not found")
 const (
 	CodeLeaseHeld     = "lease_held"
 	CodeLeaseMismatch = "lease_mismatch"
+	CodeLeaseFree     = "lease_free"
 )
 
 // ConflictError は 409 のときに返る。lease_held では持ち主と期限、lease_mismatch では今の持ち主・世代・期限が入る。
@@ -59,8 +60,12 @@ type Meta struct {
 	Holder         *string `json:"holder"`
 	Generation     int64   `json:"generation"`
 	LeaseExpiresAt *string `json:"lease_expires_at"`
-	ExpiresAt      string  `json:"expires_at"`
-	UpdatedAt      string  `json:"updated_at"`
+	// ReleaseRequestedBy は今の持ち主に返してほしいと頼んだ Commander。
+	ReleaseRequestedBy *string `json:"release_requested_by"`
+	// PushedAt は最後に記録を PUT した時刻。
+	PushedAt  *string `json:"pushed_at"`
+	ExpiresAt string  `json:"expires_at"`
+	UpdatedAt string  `json:"updated_at"`
 }
 
 // Str は nil を空文字として読む。
@@ -79,10 +84,19 @@ type Patch struct {
 	SessionID *string `json:"session_id,omitempty"`
 }
 
-// Lease は借りたときの世代と期限。
+// Lease は借りたとき・延ばしたときの世代と期限。延ばしたときは、返してほしいと頼んだ Commander も入る。
 type Lease struct {
-	Generation     int64  `json:"generation"`
-	LeaseExpiresAt string `json:"lease_expires_at"`
+	Generation         int64   `json:"generation"`
+	LeaseExpiresAt     string  `json:"lease_expires_at"`
+	ReleaseRequestedBy *string `json:"release_requested_by"`
+}
+
+// ReleaseRequest は返してほしいと頼んだときの、今の貸し出し。
+type ReleaseRequest struct {
+	Holder             string `json:"holder"`
+	Generation         int64  `json:"generation"`
+	LeaseExpiresAt     string `json:"lease_expires_at"`
+	ReleaseRequestedBy string `json:"release_requested_by"`
 }
 
 // LeaseMode は acquire（空いているときだけ）か takeover（奪う）。
@@ -262,4 +276,15 @@ func (c *Client) RenewLease(ctx context.Context, number int, holder string, gene
 func (c *Client) ReleaseLease(ctx context.Context, number int, holder string, generation int64) error {
 	in := map[string]any{"holder": holder, "generation": generation}
 	return c.doJSON(ctx, http.MethodDelete, c.path(number, "/lease"), in, nil)
+}
+
+// RequestRelease は今の持ち主に返してほしいと頼む。誰も持っていなければ lease_free、
+// 頼んだ側が今の持ち主なら lease_mismatch の ConflictError。
+func (c *Client) RequestRelease(ctx context.Context, number int, holder string) (*ReleaseRequest, error) {
+	in := map[string]any{"holder": holder}
+	var r ReleaseRequest
+	if err := c.doJSON(ctx, http.MethodPost, c.path(number, "/lease/request"), in, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }

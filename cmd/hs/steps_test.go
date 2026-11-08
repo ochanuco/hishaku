@@ -80,8 +80,19 @@ func TestPushAndRenewExitCodes(t *testing.T) {
 		t.Fatalf("prepare = %d %q", code, errOut)
 	}
 	gen := strconv.Itoa(1)
-	if code, _, errOut := runCmd("renew", "4821", "--generation", gen); code != 0 {
-		t.Fatalf("renew = %d %q", code, errOut)
+	code, out, errOut := runCmd("renew", "4821", "--generation", gen, "--json")
+	var renewed map[string]any
+	if code != 0 || json.Unmarshal([]byte(out), &renewed) != nil {
+		t.Fatalf("renew = %d %q %q", code, out, errOut)
+	}
+	if v, ok := renewed["release_requested_by"]; !ok || v != nil || renewed["generation"] != float64(1) || renewed["lease_expires_at"] == "" {
+		t.Fatalf("renew json = %v", renewed)
+	}
+	if code, _, errOut := runCmd("request", "4821", "--holder", "other-box", "--json"); code != 0 {
+		t.Fatalf("request = %d %q", code, errOut)
+	}
+	if _, out, _ := runCmd("renew", "4821", "--generation", gen, "--json"); !strings.Contains(out, `"release_requested_by":"other-box"`) {
+		t.Fatalf("renew after request = %q", out)
 	}
 	if code, _, errOut := runCmd("push", "4821", "--generation", gen, "--cwd", cwd); code != 0 {
 		t.Fatalf("push = %d %q", code, errOut)
@@ -113,8 +124,28 @@ func TestPushAndRenewExitCodes(t *testing.T) {
 	}
 }
 
+func TestRequestExitCodes(t *testing.T) {
+	s := &managertest.Session{Agent: "claude"}
+	f := setupSteps(t, s)
+	if code, _, errOut := runCmd("request", "4821", "--json"); code != 5 {
+		t.Fatalf("free = %d %q", code, errOut)
+	}
+	func() {
+		defer f.Lock()()
+		s.Holder, s.Generation = "other-box", 3
+	}()
+	code, out, errOut := runCmd("request", "4821", "--json")
+	var v map[string]any
+	if code != 0 || json.Unmarshal([]byte(out), &v) != nil || v["holder"] != "other-box" || v["generation"] != float64(3) || v["release_requested_by"] != "box-a" {
+		t.Fatalf("request = %d %q %q", code, out, errOut)
+	}
+	if code, _, _ := runCmd("request", "4821", "--holder", "other-box"); code != 1 {
+		t.Fatalf("self = %d", code)
+	}
+}
+
 func TestStepsHelp(t *testing.T) {
-	for _, c := range []string{"prepare", "push", "renew"} {
+	for _, c := range []string{"prepare", "push", "renew", "request"} {
 		if code, _, errOut := runCmd(c, "--help"); code != 0 || !strings.Contains(errOut, "使い方: hs "+c) {
 			t.Fatalf("%s --help = %d %q", c, code, errOut)
 		}

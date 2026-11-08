@@ -224,6 +224,46 @@ func TestResumeHeld(t *testing.T) {
 	}
 }
 
+func TestResumeWaitsForRelease(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Holder: "other-box", Transcript: []byte("a\n")}
+	e := setup(t, s, 0)
+	go func() {
+		for len(e.fake.CallsTo("POST", "/lease/request")) == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		defer e.fake.Lock()()
+		s.Holder = ""
+	}()
+	var waited []string
+	e.opts.Wait = true
+	e.opts.WaitInterval = 10 * time.Millisecond
+	e.opts.OnWait = func(holder string) { waited = append(waited, holder) }
+	if _, err := Run(context.Background(), e.opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(waited) != 1 || waited[0] != "other-box" {
+		t.Fatalf("waited = %v", waited)
+	}
+	if e.readRecord(t).Before != "a\n" {
+		t.Fatal("agent did not start with the transcript")
+	}
+}
+
+func TestResumeTellsReleaseRequestOnce(t *testing.T) {
+	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Transcript: []byte("a\n")}
+	e := setup(t, s, 300*time.Millisecond)
+	e.fake.AfterPut = func(s *managertest.Session) { s.ReleaseRequestedBy = "other-box" }
+	var log strings.Builder
+	e.opts.Log = &log
+	if _, err := Run(context.Background(), e.opts); err != nil {
+		t.Fatal(err)
+	}
+	want := "other-box が 4821 を返してほしいと言っています。終わったら agent を閉じてください"
+	if strings.Count(log.String(), want) != 1 {
+		t.Fatalf("log = %q", log.String())
+	}
+}
+
 func TestResumeHeldBySelf(t *testing.T) {
 	s := &managertest.Session{Agent: "claude", SessionID: "sid-1", Holder: "box-a"}
 	e := setup(t, s, 0)

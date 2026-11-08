@@ -166,15 +166,73 @@ describe("貸し出しの API", () => {
 	});
 });
 
+describe("返してほしいと頼む API", () => {
+	it("持ち主がいれば 200 で頼んだ側を返し、renew と meta に載る", async () => {
+		const { number } = await createSession();
+		await acquire(number, "mac-a");
+		const requested = await send(
+			"POST",
+			`/v1/sessions/${number}/lease/request`,
+			{ holder: "gpu-box" },
+		);
+		expect(requested.status).toBe(200);
+		expect(await requested.json()).toMatchObject({
+			holder: "mac-a",
+			generation: 1,
+			release_requested_by: "gpu-box",
+		});
+		const renewed = await send("POST", `/v1/sessions/${number}/lease/renew`, {
+			holder: "mac-a",
+			generation: 1,
+		});
+		expect(await renewed.json()).toMatchObject({
+			generation: 1,
+			release_requested_by: "gpu-box",
+		});
+		expect(await (await call(`/v1/sessions/${number}`)).json()).toMatchObject({
+			release_requested_by: "gpu-box",
+		});
+	});
+
+	it("誰も持っていなければ lease_free、持ち主自身なら lease_mismatch、holder が無ければ 400", async () => {
+		const { number } = await createSession();
+		const path = `/v1/sessions/${number}/lease/request`;
+		const free = await send("POST", path, { holder: "gpu-box" });
+		expect(free.status).toBe(409);
+		expect(await free.json()).toEqual({ error: "lease_free" });
+
+		await acquire(number, "mac-a");
+		const self = await send("POST", path, { holder: "mac-a" });
+		expect(self.status).toBe(409);
+		expect(await self.json()).toMatchObject({ error: "lease_mismatch" });
+
+		expect((await send("POST", path, {})).status).toBe(400);
+		expect((await send("GET", path)).status).toBe(405);
+	});
+});
+
 describe("記録の API", () => {
 	it("記録が無ければ 404、置けば世代つきで返す", async () => {
 		const { number } = await createSession();
 		expect((await call(`/v1/sessions/${number}/transcript`)).status).toBe(404);
 		await acquire(number, "docker01");
+		const before = await (await call(`/v1/sessions/${number}`)).json<{
+			pushed_at: string | null;
+		}>();
+		expect(before.pushed_at).toBeNull();
 
 		const jsonl = '{"type":"user"}\n{"type":"assistant"}\n';
 		const put = await putTranscript(number, "docker01", 1, jsonl);
 		expect(put.status).toBe(204);
+		const after = await (await call(`/v1/sessions/${number}`)).json<{
+			post_id: string;
+			pushed_at: string | null;
+		}>();
+		expect(after.pushed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		const byPost = await call(
+			`/v1/sessions?post_id=${encodeURIComponent(after.post_id)}`,
+		);
+		expect(await byPost.json()).toMatchObject({ pushed_at: after.pushed_at });
 
 		const got = await call(`/v1/sessions/${number}/transcript`);
 		expect(got.status).toBe(200);
@@ -211,6 +269,10 @@ describe("記録の API", () => {
 		const { key: key2 } = await second.json<{ key: string }>();
 		expect(key2).not.toBe(key);
 		expect(await (await env.TRANSCRIPTS.get(key))?.text()).toBe('{"n":1}\n');
+		// forks は正本ではないので、最後に預けた時刻は変えない
+		expect(await (await call(`/v1/sessions/${number}`)).json()).toMatchObject({
+			pushed_at: null,
+		});
 	});
 });
 

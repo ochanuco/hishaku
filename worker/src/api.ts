@@ -1,6 +1,7 @@
 import * as v from "valibot";
 import {
 	AGENTS,
+	type LeaseFree,
 	type LeaseHeld,
 	type LeaseMismatch,
 	type NotFound,
@@ -74,6 +75,8 @@ const RenewBody = v.object({
 
 const ReleaseBody = v.object({ holder: Holder, generation: Generation });
 
+const RequestBody = v.object({ holder: Holder });
+
 const FenceQuery = v.object({
 	holder: Holder,
 	generation: v.pipe(
@@ -98,10 +101,12 @@ const invalid = (issues: v.BaseIssue<unknown>[]) =>
 		})),
 	});
 
-const failure = (error: NotFound | LeaseHeld | LeaseMismatch) => {
+const failure = (error: NotFound | LeaseHeld | LeaseFree | LeaseMismatch) => {
 	switch (error.kind) {
 		case "not_found":
 			return notFound();
+		case "lease_free":
+			return json(409, { error: "lease_free" });
 		case "lease_held":
 			return json(409, {
 				error: "lease_held",
@@ -247,7 +252,7 @@ export const handleApi = async (
 						generation: String(query.output.generation),
 					},
 				});
-				registry.touch(number);
+				registry.markPushed(number);
 				await deps.afterWrite();
 				return new Response(null, {
 					status: 204,
@@ -290,6 +295,15 @@ export const handleApi = async (
 				return json(200, renewed.value);
 			});
 		}
+		case "POST lease/request": {
+			const body = await readJson(request, RequestBody);
+			if (!body.ok) return body.response;
+			return deps.serialize(number, async () => {
+				const requested = registry.requestRelease(number, body.value.holder);
+				if (!requested.ok) return failure(requested.error);
+				return json(200, requested.value);
+			});
+		}
 		case "DELETE lease": {
 			const body = await readJson(request, ReleaseBody);
 			if (!body.ok) return body.response;
@@ -301,7 +315,14 @@ export const handleApi = async (
 			});
 		}
 	}
-	const known = ["", "transcript", "forks", "lease", "lease/renew"];
+	const known = [
+		"",
+		"transcript",
+		"forks",
+		"lease",
+		"lease/renew",
+		"lease/request",
+	];
 	return known.includes(rest) ? methodNotAllowed() : notFound();
 };
 

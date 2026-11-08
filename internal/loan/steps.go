@@ -69,8 +69,13 @@ type PrepareOptions struct {
 	Number   int
 	Holder   string
 	Takeover bool
-	TTL      time.Duration
-	Adapter  AdapterFor
+	// Wait なら、他が借りているときに返してほしいと頼んで待つ。
+	Wait bool
+	// WaitInterval と OnWait は WaitOptions と同じ。
+	WaitInterval time.Duration
+	OnWait       func(holder string)
+	TTL          time.Duration
+	Adapter      AdapterFor
 	// StateDir は push に引き継ぐ状態の置き場所。空なら残さない。
 	StateDir string
 	Now      func() time.Time
@@ -93,7 +98,13 @@ func Prepare(ctx context.Context, o PrepareOptions) (*Prepared, error) {
 		now = time.Now
 	}
 	startedAt := now()
-	l, err := Acquire(ctx, o.Client, o.Number, o.Holder, o.Takeover, o.TTL)
+	var l *Loan
+	var err error
+	if o.Wait && !o.Takeover {
+		l, err = AcquireWait(ctx, o.Client, o.Number, o.Holder, WaitOptions{TTL: o.TTL, Interval: o.WaitInterval, OnWait: o.OnWait})
+	} else {
+		l, err = Acquire(ctx, o.Client, o.Number, o.Holder, o.Takeover, o.TTL)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -225,14 +236,26 @@ func Push(ctx context.Context, o PushOptions) error {
 	return nil
 }
 
+// Renewed は hs renew の結果。
+type Renewed struct {
+	Generation     int64  `json:"generation"`
+	LeaseExpiresAt string `json:"lease_expires_at"`
+	// ReleaseRequestedBy は返してほしいと頼んだ Commander。誰も頼んでいなければ null。
+	ReleaseRequestedBy *string `json:"release_requested_by"`
+}
+
 // Renew は貸し出しを延ばす。取られていれば ErrStolen。
-func Renew(ctx context.Context, c *manager.Client, number int, holder string, generation int64) error {
+func Renew(ctx context.Context, c *manager.Client, number int, holder string, generation int64) (*Renewed, error) {
 	l := &Loan{Client: c, Number: number, Holder: holder, Generation: generation}
 	if err := l.Renew(ctx); err != nil {
 		if errors.Is(err, ErrStolen) {
-			return err
+			return nil, err
 		}
-		return fmt.Errorf("貸し出しを延ばせません: %w", err)
+		return nil, fmt.Errorf("貸し出しを延ばせません: %w", err)
 	}
-	return nil
+	r := &Renewed{Generation: l.Generation, LeaseExpiresAt: l.LeaseExpiresAt}
+	if l.ReleaseRequestedBy != "" {
+		r.ReleaseRequestedBy = &l.ReleaseRequestedBy
+	}
+	return r, nil
 }

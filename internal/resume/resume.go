@@ -25,6 +25,12 @@ type Options struct {
 	Number   int
 	Holder   string
 	Takeover bool
+	// Wait なら、他が借りているときに返してほしいと頼み、返されるまで待つ。
+	Wait bool
+	// WaitInterval は待つ間に acquire を試す間隔。0 なら loan.DefaultWaitInterval。
+	WaitInterval time.Duration
+	// OnWait は待ち始めるときに 1 度だけ、今の持ち主を渡して呼ぶ。
+	OnWait func(holder string)
 	// Adapter は meta の agent から Adapter を作る。
 	Adapter func(name string) (agent.Adapter, error)
 	// Extra は agent に渡す追加の引数。
@@ -56,7 +62,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 		return 1, errors.New("adapter が指定されていません")
 	}
 
-	l, err := loan.Acquire(ctx, o.Client, o.Number, o.Holder, o.Takeover, o.TTL)
+	l, err := acquire(ctx, o)
 	if err != nil {
 		var he *HeldError
 		// Manager は期限内なら自分の貸し出しでも acquire を断る。前の hs が落ちて返さなかった場合にこうなる。
@@ -130,6 +136,23 @@ loop:
 	return 0, nil
 }
 
+func acquire(ctx context.Context, o Options) (*loan.Loan, error) {
+	if !o.Wait || o.Takeover {
+		return loan.Acquire(ctx, o.Client, o.Number, o.Holder, o.Takeover, o.TTL)
+	}
+	// agent を起こす前なので、待つ間の Ctrl-C はそのまま hs を終わらせる
+	if o.Signals == nil {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+	}
+	l, err := loan.AcquireWait(ctx, o.Client, o.Number, o.Holder, loan.WaitOptions{TTL: o.TTL, Interval: o.WaitInterval, OnWait: o.OnWait})
+	if errors.Is(err, context.Canceled) {
+		return nil, errors.New("返してもらうのを待つのをやめました")
+	}
+	return l, err
+}
+
 type session struct {
 	o         Options
 	loan      *loan.Loan
@@ -142,6 +165,8 @@ type session struct {
 	lastSum   [32]byte
 	stolen    bool
 	forkSum   [32]byte
+	// asked は返してほしいと頼まれたことをもう知らせたか。
+	asked bool
 }
 
 func (s *session) logf(format string, args ...any) {
@@ -219,6 +244,10 @@ func (s *session) renew(ctx context.Context, final bool) {
 	err := s.loan.Renew(ctx)
 	switch {
 	case err == nil:
+		if by := s.loan.ReleaseRequestedBy; by != "" && by != s.o.Holder && !s.asked {
+			s.asked = true
+			s.logf("%s が %d を返してほしいと言っています。終わったら agent を閉じてください", by, s.o.Number)
+		}
 	case errors.Is(err, loan.ErrStolen):
 		s.markStolen()
 	default:

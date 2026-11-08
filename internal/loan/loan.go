@@ -21,6 +21,12 @@ const DefaultTTL = 2 * time.Minute
 // ErrStolen は今の貸し出しが他に取られていたこと（409）を表す。
 var ErrStolen = errors.New("貸し出しは他に取られていました")
 
+// ErrFree は返してほしいと頼んだが、誰も借りていなかったことを表す。
+var ErrFree = errors.New("誰も借りていません")
+
+// DefaultWaitInterval は返してもらうのを待つ間に acquire を試す間隔。
+const DefaultWaitInterval = 5 * time.Second
+
 // HeldError は他の holder が借りていて acquire できなかったことを表す。
 type HeldError struct {
 	Number         int
@@ -42,6 +48,8 @@ type Loan struct {
 	Holder         string
 	Generation     int64
 	LeaseExpiresAt string
+	// ReleaseRequestedBy は最後の renew で分かった、返してほしいと頼んだ Commander。
+	ReleaseRequestedBy string
 }
 
 // Acquire は貸し出しを受ける。他が借りていれば HeldError。
@@ -88,7 +96,70 @@ func (l *Loan) Renew(ctx context.Context) error {
 		return stolen(err)
 	}
 	l.LeaseExpiresAt = lease.LeaseExpiresAt
+	l.ReleaseRequestedBy = manager.Str(lease.ReleaseRequestedBy)
 	return nil
+}
+
+// Request は今の持ち主に返してほしいと頼む。誰も借りていなければ ErrFree。
+func Request(ctx context.Context, c *manager.Client, number int, holder string) (*manager.ReleaseRequest, error) {
+	r, err := c.RequestRelease(ctx, number, holder)
+	var ce *manager.ConflictError
+	switch {
+	case err == nil:
+		return r, nil
+	case errors.As(err, &ce) && ce.Code == manager.CodeLeaseFree:
+		return nil, ErrFree
+	case errors.As(err, &ce) && ce.Code == manager.CodeLeaseMismatch:
+		return nil, fmt.Errorf("番号 %d の持ち主は %s 自身です", number, holder)
+	}
+	return nil, fmt.Errorf("返してほしいと頼めません: %w", err)
+}
+
+// WaitOptions は AcquireWait の入力。
+type WaitOptions struct {
+	TTL time.Duration
+	// Interval は acquire を試す間隔。0 なら DefaultWaitInterval。
+	Interval time.Duration
+	// OnWait は待ち始めるときに 1 度だけ、今の持ち主を渡して呼ぶ。
+	OnWait func(holder string)
+}
+
+// AcquireWait は他が借りていれば返してほしいと頼み、返されるまで acquire を試し続ける。
+// 持ち主がこの機械なら頼めないので、待たずに HeldError を返す。ctx が終われば ctx.Err()。
+func AcquireWait(ctx context.Context, c *manager.Client, number int, holder string, o WaitOptions) (*Loan, error) {
+	if o.Interval <= 0 {
+		o.Interval = DefaultWaitInterval
+	}
+	waiting := false
+	requested := ""
+	for {
+		l, err := Acquire(ctx, c, number, holder, false, o.TTL)
+		var he *HeldError
+		if !errors.As(err, &he) {
+			return l, err
+		}
+		if he.Holder == holder {
+			return nil, err
+		}
+		// 待つ間に持ち主が替わったら、新しい持ち主にも頼み直す
+		if he.Holder != requested {
+			if _, err := Request(ctx, c, number, holder); err != nil && !errors.Is(err, ErrFree) {
+				return nil, err
+			}
+			requested = he.Holder
+		}
+		if !waiting {
+			waiting = true
+			if o.OnWait != nil {
+				o.OnWait(he.Holder)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(o.Interval):
+		}
+	}
 }
 
 // Release は貸し出しを返す。取られていれば ErrStolen。

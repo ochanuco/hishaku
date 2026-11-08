@@ -28,16 +28,18 @@ mise use -g github:ochanuco/hishaku
 
 ## コマンド
 
-### `hs resume [--takeover] <number> [-- <agent の引数>]`
+### `hs resume [--takeover] [--wait|--no-wait] <number> [-- <agent の引数>]`
 
 番号の貸し出しを受け、正本の記録を agent の置き場所に置いて agent を起こす。agent の画面と入力はそのまま使える。
 
 - `--` の後ろは agent にそのまま渡す（`--permission-mode auto`、`--model`、Codex の `-a never -s danger-full-access` など）。Claude では起こすコマンドの後ろに、Codex では `resume` の前に置く。
 
-- 他の機械が借りていれば、持ち主と期限を出して終わる。`--takeover` を付けると奪う。
+- 他の機械が借りていれば、持ち主に返してほしいと頼み、5 秒おきに借りられるかを試す。借りられたら続ける。待つ間は「<番号> は <holder> が使っています。返してもらうのを待っています（Ctrl-C でやめる）」を 1 度出す。
+- 待つのは標準入力が端末のときの既定。`--no-wait`（端末でなければ既定）では待たずに持ち主と期限を出して 2 で終わる。`--takeover` を付けると待たずに奪う。
 - 正本に記録が無ければ新しいセッションを始め、その session_id を meta に残す。
 - 動いている間は 30 秒ごとに、記録が変わっていれば預け、貸し出しを延ばす。
 - agent が終わったら最後の記録を預けて貸し出しを返す。終了コードは agent のものをそのまま返す。
+- 動いている間に他の Commander から返してほしいと頼まれたら「<holder> が <番号> を返してほしいと言っています。終わったら agent を閉じてください」を 1 度出す。agent は止めない。閉じれば記録を預けて返すので、待っている側が借りる。
 - 途中で他の機械に取られたら「取られた」と出し、以後の記録は正本を上書きせず forks に枝として預ける。
 - SIGTERM は agent に渡し、agent が終わってから最後の処理をする。端末の Ctrl-C は agent が直接受け取る。
 
@@ -53,16 +55,17 @@ agent ごとの記録の置き場所と起こし方:
 番号の件名・repo・ブランチ・agent を出して確かめ（`-y` で省く）、Orca に worktree `hs-<number>` を立てて `hs resume <number>` を走らせる端末を開く。
 
 - repo を省くと meta の repo を使う。Orca に登録された repo から remote（無ければ path の末尾）で探す。
+- 端末の `hs resume` は既定のまま起こすので、他が借りていれば返してもらうのを待つ。
 - meta にも引数にも repo が無ければ worktree を作らず、その端末のカレントで `hs resume <number>` と同じように前の会話を開く。
 - worktree `hs-<number>` が既にあれば作らずに使う。無ければ meta のブランチで作る（agent は起こさない）。
 
 ### agent を呼ぶ側が起こすとき
 
-端末の先頭を agent にしたい呼び手（mizuya の Working など）は、`hs resume` の代わりに次の 3 つを使い、agent のコマンドは自分で組み立てる。`--holder` の既定は `HISHAKU_HOLDER`、次にホスト名から作る値。
+端末の先頭を agent にしたい呼び手（mizuya の Working など）は、`hs resume` の代わりに次のコマンドを使い、agent のコマンドは自分で組み立てる。`--holder` の既定は `HISHAKU_HOLDER`、次にホスト名から作る値。
 
-#### `hs prepare <number> [--holder <id>] [--cwd <dir>] [--takeover] [--json]`
+#### `hs prepare <number> [--holder <id>] [--cwd <dir>] [--takeover] [--wait] [--json]`
 
-貸し出しを受け、正本の記録を `--cwd`（既定はカレント）を基準にした agent の置き場所に置く。`--json` で標準出力に 1 行の JSON を出す。
+貸し出しを受け、正本の記録を `--cwd`（既定はカレント）を基準にした agent の置き場所に置く。`--json` で標準出力に 1 行の JSON を出す。`--wait` を付けると、他が借りていれば `hs resume` と同じように返してほしいと頼んで待つ（既定は待たずに 2 で終わる）。
 
 ```text
 {"number":1234,"agent":"claude","session_id":"<id>","resume":true,"generation":3,"lease_expires_at":"2026-01-01T00:02:00Z"}
@@ -87,9 +90,13 @@ agent の記録を見つけて正本に預ける。`--release` で預けた後�
 - Codex で session_id がまだ無ければ、`hs prepare` の後に `--cwd` で書かれた最新の rollout から拾って meta に残す。そのため prepare と push は同じ機械で呼ぶ。
 - 記録が空か、前に預けたときから変わっていなければ PUT しない。
 
-#### `hs renew <number> --generation N [--holder <id>]`
+#### `hs renew <number> --generation N [--holder <id>] [--json]`
 
-貸し出しを延ばす。期限は 2 分なので、それより短い間隔で呼ぶ。
+貸し出しを延ばす。期限は 2 分なので、それより短い間隔で呼ぶ。`--json` で標準出力に 1 行の JSON を出す。`release_requested_by` は返してほしいと頼んだ Commander（誰も頼んでいなければ `null`）で、入っていれば区切りで agent を閉じ、`hs push --release` で返す。
+
+```text
+{"generation":3,"lease_expires_at":"2026-01-01T00:02:00Z","release_requested_by":"mac-a"}
+```
 
 `hs push` と `hs renew` の終了コード:
 
@@ -98,3 +105,17 @@ agent の記録を見つけて正本に預ける。`--release` で預けた後�
 | 0          | 成功                                                                      |
 | 3          | 貸し出しは他に取られていた（409）。push は記録を forks に預けてから終わる |
 | 1          | そのほか                                                                  |
+
+#### `hs request <number> [--holder <id>] [--json]`
+
+今の持ち主に返してほしいと頼む。持ち主は次の renew でそれを知る。`--json` で今の持ち主・世代・期限と頼んだ Commander を 1 行の JSON で出す。
+
+```text
+{"holder":"docker01","generation":3,"lease_expires_at":"2026-01-01T00:02:00Z","release_requested_by":"mac-a"}
+```
+
+| 終了コード | 意味                                 |
+| ---------- | ------------------------------------ |
+| 0          | 頼んだ                               |
+| 5          | 誰も借りていない                     |
+| 1          | そのほか（自分が持ち主のときを含む） |
