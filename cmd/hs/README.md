@@ -57,7 +57,9 @@ agent ごとの記録の置き場所と起こし方:
 - repo を省くと meta の repo を使う。Orca に登録された repo から remote（無ければ path の末尾）で探す。
 - 端末の `hs resume` は既定のまま起こすので、他が借りていれば返してもらうのを待つ。
 - meta にも引数にも repo が無ければ worktree を作らず、その端末のカレントで `hs resume <number>` と同じように前の会話を開く。
-- worktree `hs-<number>` が既にあれば作らずに使う。無ければ meta のブランチで作る（agent は起こさない）。
+- worktree `hs-<number>` が既にあれば作らずに使う。無ければ作る（agent は起こさない）。
+- meta にブランチがあれば、Orca の repo の path で `git fetch origin <branch>` してから、`origin/<branch>` を起点に同じ名前のブランチで worktree を作る。fetch に失敗したら理由を出して止まり、worktree は作らない。
+- meta にブランチが無ければ、Orca の repo の既定の base から作る。
 
 ### agent を呼ぶ側が起こすとき
 

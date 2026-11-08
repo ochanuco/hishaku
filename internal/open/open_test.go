@@ -13,11 +13,15 @@ import (
 
 type fakeRunner struct {
 	worktrees string
+	fetchErr  error
 	calls     [][]string
 }
 
 func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, append([]string{name}, args...))
+	if name == "git" {
+		return nil, f.fetchErr
+	}
 	switch strings.Join(args[:2], " ") {
 	case "repo list":
 		return []byte(`{"ok":true,"result":{"repos":[
@@ -57,7 +61,8 @@ func TestOpenCreatesWorktreeAndTerminal(t *testing.T) {
 	want := [][]string{
 		{"/opt/orca", "repo", "list", "--json"},
 		{"/opt/orca", "worktree", "list", "--repo", "id:repo-1", "--json"},
-		{"/opt/orca", "worktree", "create", "--repo", "id:repo-1", "--name", "hs-4821", "--branch", "dev/example", "--activate", "--json"},
+		{"git", "-C", "/src/somewhere/app", "fetch", "origin", "dev/example"},
+		{"/opt/orca", "worktree", "create", "--repo", "id:repo-1", "--name", "hs-4821", "--base-branch", "origin/dev/example", "--branch", "dev/example", "--activate", "--json"},
 		{"/opt/orca", "terminal", "create", "--worktree", "name:hs-4821", "--command", "hs resume 4821", "--focus", "--json"},
 	}
 	if !reflect.DeepEqual(r.calls, want) {
@@ -77,12 +82,24 @@ func TestOpenReusesWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range r.calls {
-		if c[1] == "worktree" && c[2] == "create" {
+		if c[0] == "git" || c[1] == "worktree" && c[2] == "create" {
 			t.Fatalf("created again: %v", c)
 		}
 	}
 	if last := r.calls[len(r.calls)-1]; last[1] != "terminal" {
 		t.Fatalf("last call = %v", last)
+	}
+}
+
+func TestOpenStopsWhenFetchFails(t *testing.T) {
+	o, r, _ := setup(t, &managertest.Session{Agent: "claude", Repo: "example-org/app", Branch: "dev/example"})
+	r.fetchErr = errors.New("couldn't find remote ref dev/example")
+	err := Run(context.Background(), o)
+	if err == nil || !strings.Contains(err.Error(), "dev/example") || !strings.Contains(err.Error(), "couldn't find remote ref") {
+		t.Fatalf("err = %v", err)
+	}
+	if last := r.calls[len(r.calls)-1]; last[0] != "git" {
+		t.Fatalf("ran after fetch failed: %v", last)
 	}
 }
 

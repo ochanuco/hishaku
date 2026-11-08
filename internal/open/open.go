@@ -85,10 +85,11 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 
-	repoID, err := findRepo(ctx, o, repo)
+	r, err := findRepo(ctx, o, repo)
 	if err != nil {
 		return err
 	}
+	repoID := r.ID
 	name := WorktreeName(o.Number)
 	exists, err := hasWorktree(ctx, o, repoID, name)
 	if err != nil {
@@ -99,7 +100,12 @@ func Run(ctx context.Context, o Options) error {
 	} else {
 		args := []string{"worktree", "create", "--repo", "id:" + repoID, "--name", name}
 		if branch != "" {
-			args = append(args, "--branch", branch)
+			// orca の --branch は新しく切るブランチの名前で、起点は --base-branch。
+			// 起点を origin の作業ブランチにしないと、席が push した commit の無いブランチが既定の base から切られる。
+			if _, err := o.Runner.Run(ctx, "git", "-C", r.Path, "fetch", "origin", branch); err != nil {
+				return fmt.Errorf("origin から %s を取れないので worktree を作りません: %w", branch, err)
+			}
+			args = append(args, "--base-branch", "origin/"+branch, "--branch", branch)
 		}
 		args = append(args, "--activate", "--json")
 		if _, err := orca(ctx, o, args...); err != nil {
@@ -152,29 +158,29 @@ type orcaRepo struct {
 
 // findRepo は org/repo に合う Orca の repo を探す。
 // remote の canonicalKey（github.com/org/repo）を先に見て、無ければ path の末尾 org/repo で合わせる。
-func findRepo(ctx context.Context, o Options, repo string) (string, error) {
+func findRepo(ctx context.Context, o Options, repo string) (orcaRepo, error) {
 	res, err := orca(ctx, o, "repo", "list", "--json")
 	if err != nil {
-		return "", err
+		return orcaRepo{}, err
 	}
 	var v struct {
 		Repos []orcaRepo `json:"repos"`
 	}
 	if err := json.Unmarshal(res, &v); err != nil {
-		return "", fmt.Errorf("orca repo list: %w", err)
+		return orcaRepo{}, fmt.Errorf("orca repo list: %w", err)
 	}
 	want := "/" + strings.ToLower(strings.Trim(repo, "/"))
 	for _, r := range v.Repos {
 		if r.GitRemoteIdentity != nil && strings.HasSuffix("/"+strings.ToLower(r.GitRemoteIdentity.CanonicalKey), want) {
-			return r.ID, nil
+			return r, nil
 		}
 	}
 	for _, r := range v.Repos {
 		if strings.HasSuffix(strings.ToLower(filepath.ToSlash(r.Path)), want) {
-			return r.ID, nil
+			return r, nil
 		}
 	}
-	return "", fmt.Errorf("Orca に %s の repo がありません（orca repo add で足してください）", repo)
+	return orcaRepo{}, fmt.Errorf("Orca に %s の repo がありません（orca repo add で足してください）", repo)
 }
 
 func hasWorktree(ctx context.Context, o Options, repoID, name string) (bool, error) {
