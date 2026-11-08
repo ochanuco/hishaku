@@ -41,3 +41,13 @@ func TestRunUsage(t *testing.T) {
 		t.Fatalf("bad repo code = %d", code)
 	}
 }
+
+func TestSplitExtra(t *testing.T) {
+	own, extra := splitExtra([]string{"4821", "--takeover", "--", "--model", "x", "--"})
+	if !reflect.DeepEqual(own, []string{"4821", "--takeover"}) || !reflect.DeepEqual(extra, []string{"--model", "x", "--"}) {
+		t.Fatalf("own = %v extra = %v", own, extra)
+	}
+	if own, extra := splitExtra([]string{"4821"}); len(own) != 1 || extra != nil {
+		t.Fatalf("own = %v extra = %v", own, extra)
+	}
+}

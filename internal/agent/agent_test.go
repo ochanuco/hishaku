@@ -32,10 +32,10 @@ func TestForUsesConfigDirs(t *testing.T) {
 	if want := filepath.Join("/cfg/claude", "projects", "-work-a-b", "sid-1.jsonl"); p != want {
 		t.Fatalf("claude path %q, want %q", p, want)
 	}
-	if got := a.ResumeCommand("sid-1"); !reflect.DeepEqual(got, []string{"claude", "-r", "sid-1"}) {
+	if got := a.ResumeCommand("sid-1", nil); !reflect.DeepEqual(got, []string{"claude", "-r", "sid-1"}) {
 		t.Fatalf("resume %v", got)
 	}
-	if got := a.NewCommand("sid-1"); !reflect.DeepEqual(got, []string{"claude", "--session-id", "sid-1"}) {
+	if got := a.NewCommand("sid-1", nil); !reflect.DeepEqual(got, []string{"claude", "--session-id", "sid-1"}) {
 		t.Fatalf("new %v", got)
 	}
 
@@ -46,11 +46,18 @@ func TestForUsesConfigDirs(t *testing.T) {
 	if got := c.(*Codex).Home; got != "/cfg/codex" {
 		t.Fatalf("codex home %q", got)
 	}
-	if got := c.ResumeCommand("sid-2"); !reflect.DeepEqual(got, []string{"codex", "resume", "sid-2"}) {
+	if got := c.ResumeCommand("sid-2", nil); !reflect.DeepEqual(got, []string{"codex", "resume", "sid-2"}) {
 		t.Fatalf("resume %v", got)
 	}
-	if got := c.NewCommand(""); !reflect.DeepEqual(got, []string{"codex"}) {
+	if got := c.NewCommand("", nil); !reflect.DeepEqual(got, []string{"codex"}) {
 		t.Fatalf("new %v", got)
+	}
+	extra := []string{"-a", "never"}
+	if got := c.ResumeCommand("sid-2", extra); !reflect.DeepEqual(got, []string{"codex", "-a", "never", "resume", "sid-2"}) {
+		t.Fatalf("resume with extra %v", got)
+	}
+	if got := a.ResumeCommand("sid-1", []string{"--model", "x"}); !reflect.DeepEqual(got, []string{"claude", "-r", "sid-1", "--model", "x"}) {
+		t.Fatalf("claude resume with extra %v", got)
 	}
 
 	if _, err := For("other", "/work", getenv); err == nil {

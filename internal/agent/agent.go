@@ -16,10 +16,10 @@ type Adapter interface {
 	Locate(sessionID string) (path string, found bool, err error)
 	// PlacePath は正本の記録を置く場所を返す。data は記録の中身で、場所が中身に依る agent が使う。
 	PlacePath(sessionID string, data []byte) (string, error)
-	// ResumeCommand は既存のセッションを再開する argv。
-	ResumeCommand(sessionID string) []string
+	// ResumeCommand は既存のセッションを再開する argv。extra は agent に渡す追加の引数。
+	ResumeCommand(sessionID string, extra []string) []string
 	// NewCommand は新規のセッションを始める argv。sessionID は NewSessionID の値。
-	NewCommand(sessionID string) []string
+	NewCommand(sessionID string, extra []string) []string
 	// NewSessionID は新規に使う ID を返す。agent が自分で ID を決めるなら空文字。
 	NewSessionID() (string, error)
 	// Discover は since 以降に新規のセッションが作った記録を探す。NewSessionID が空文字の agent 用。

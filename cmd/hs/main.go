@@ -23,8 +23,12 @@ var version = "dev"
 const usage = `hs: agent のセッションを番号で預かり、別の機械で続ける
 
 使い方:
-  hs resume [--takeover] <number>      借りて agent を起こし、終わるまで記録を預ける
+  hs resume [--takeover] <number> [-- <agent の引数>]
+                                       借りて agent を起こし、終わるまで記録を預ける
   hs open [-y] [org/repo] <number>     Orca に worktree hs-<number> と hs resume の端末を立てる
+  hs prepare <number> [--json]         借りて記録を置くだけ。agent は呼ぶ側が起こす
+  hs push <number> --generation N      agent の記録を預ける（--release で返す）
+  hs renew <number> --generation N     貸し出しを延ばす
   hs version                           版を出す
 
 環境変数:
@@ -56,6 +60,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runResume(args[1:], stderr)
 	case "open":
 		return runOpen(args[1:], stdin, stdout, stderr)
+	case "prepare":
+		return runPrepare(args[1:], stdout, stderr)
+	case "push":
+		return runPush(args[1:], stderr)
+	case "renew":
+		return runRenew(args[1:], stderr)
 	}
 	fmt.Fprintf(stderr, "hs: 知らないコマンドです: %s\n\n%s", args[0], usage)
 	return 2
@@ -93,11 +103,25 @@ func newClient(c *config.Config) *manager.Client {
 	return manager.New(c.URL, c.ClientID, c.ClientSecret)
 }
 
+// splitExtra は最初の -- で args を分け、後ろを agent に渡す引数として返す。
+func splitExtra(args []string) (own, extra []string) {
+	for i, a := range args {
+		if a == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
+}
+
 func runResume(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("hs resume", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	takeover := fs.Bool("takeover", false, "他の holder から貸し出しを奪う")
-	fs.Usage = func() { fmt.Fprintln(stderr, "使い方: hs resume [--takeover] <number>"); fs.PrintDefaults() }
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "使い方: hs resume [--takeover] <number> [-- <agent に渡す引数>]")
+		fs.PrintDefaults()
+	}
+	args, extra := splitExtra(args)
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return 2
@@ -129,6 +153,7 @@ func runResume(args []string, stderr io.Writer) int {
 		Adapter: func(name string) (agent.Adapter, error) {
 			return agent.For(name, cwd, os.Getenv)
 		},
+		Extra:            extra,
 		Log:              stderr,
 		ForwardInterrupt: !isTerminal(os.Stdin),
 	})
@@ -195,14 +220,26 @@ func runOpen(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // workingDir は symlink を解いた cwd を返す。
 // agent は getcwd の実体の道で記録の場所を決めるので（macOS の /tmp は /private/tmp になる）、それに合わせる。
 func workingDir() (string, error) {
-	wd, err := os.Getwd()
+	return resolveDir("")
+}
+
+// resolveDir は dir（空ならカレント）を symlink を解いた絶対パスにする。
+func resolveDir(dir string) (string, error) {
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		dir = wd
+	}
+	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
 	}
-	if r, err := filepath.EvalSymlinks(wd); err == nil {
+	if r, err := filepath.EvalSymlinks(abs); err == nil {
 		return r, nil
 	}
-	return wd, nil
+	return abs, nil
 }
 
 func isTerminal(f *os.File) bool {
