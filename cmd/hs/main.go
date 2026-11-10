@@ -16,6 +16,7 @@ import (
 	"github.com/ochanuco/hishaku/internal/config"
 	"github.com/ochanuco/hishaku/internal/manager"
 	"github.com/ochanuco/hishaku/internal/open"
+	"github.com/ochanuco/hishaku/internal/report"
 	"github.com/ochanuco/hishaku/internal/resume"
 )
 
@@ -31,6 +32,10 @@ const usage = `hs: agent のセッションを番号で預かり、別の機械�
                                        借りて記録を置くだけ。agent は呼ぶ側が起こす
   hs push <number> --generation N      agent の記録を預ける（--release で返す）
   hs renew <number> --generation N     貸し出しを延ばす
+  hs turn <number> --generation N [--prompt-file f] [-- <agent の引数>]
+                                       借りている番号の agent を非対話で 1 ターン走らせ、結果を JSON で出す
+  hs ask --body <本文|->               hs turn の席から持ち主への質問を受付に送る
+  hs status --body <本文|->            hs turn の席からターンの途中の知らせを受付に送る
   hs request <number>                  今の持ち主に返してほしいと頼む
   hs version                           版を出す
 
@@ -40,6 +45,9 @@ const usage = `hs: agent のセッションを番号で預かり、別の機械�
   HISHAKU_ACCESS_CLIENT_SECRET   Cloudflare Access の service token の secret
   HISHAKU_HOLDER                 この機械の名前（既定はホスト名から作る）
   ORCA_CLI_COMMAND               orca の実行ファイル（既定は orca）
+  HISHAKU_REPORT_URL             hs ask と hs status の送り先（席を動かす側が渡す）
+  HISHAKU_REPORT_TOKEN           送り先に Bearer で付ける token
+  HISHAKU_NUMBER                 hs ask と hs status の番号（hs turn が席に渡す）
   CLAUDE_CONFIG_DIR, CODEX_HOME  agent の記録の置き場所（既定は ~/.claude、~/.codex）
 `
 
@@ -71,6 +79,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runRenew(args[1:], stdout, stderr)
 	case "request":
 		return runRequest(args[1:], stdout, stderr)
+	case "turn":
+		return runTurn(args[1:], stdin, stdout, stderr)
+	case "ask":
+		return runReport(report.Ask, args[1:], stdin, stderr)
+	case "status":
+		return runReport(report.Status, args[1:], stdin, stderr)
 	}
 	fmt.Fprintf(stderr, "hs: 知らないコマンドです: %s\n\n%s", args[0], usage)
 	return 2

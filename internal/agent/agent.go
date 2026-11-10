@@ -24,6 +24,11 @@ type Adapter interface {
 	NewSessionID() (string, error)
 	// Discover は since 以降に新規のセッションが作った記録を探す。NewSessionID が空文字の agent 用。
 	Discover(since time.Time) (sessionID, path string, found bool, err error)
+	// TurnCommand は 1 ターンを非対話で走らせる argv。指示は標準入力で渡す。
+	// lastMessage は最後のメッセージを書かせるファイルで、使わない agent もある。
+	TurnCommand(sessionID string, resume bool, extra []string, lastMessage string) []string
+	// TurnResult は TurnCommand の標準出力と lastMessage からターンの結果を読む。
+	TurnResult(stdout []byte, lastMessage string) (Turn, error)
 }
 
 // For は agent の名前から Adapter を作る。cwd は agent を起こす作業場所。
