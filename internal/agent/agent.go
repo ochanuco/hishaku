@@ -26,7 +26,7 @@ type Adapter interface {
 	Discover(since time.Time) (sessionID, path string, found bool, err error)
 	// TurnCommand は 1 ターンを非対話で走らせる argv。指示は標準入力で渡す。
 	// lastMessage は最後のメッセージを書かせるファイルで、使わない agent もある。
-	TurnCommand(sessionID string, resume bool, extra []string, lastMessage string) []string
+	TurnCommand(how TurnHow, extra []string, lastMessage string) []string
 	// TurnResult は TurnCommand の標準出力と lastMessage からターンの結果を読む。
 	TurnResult(stdout []byte, lastMessage string) (Turn, error)
 }
