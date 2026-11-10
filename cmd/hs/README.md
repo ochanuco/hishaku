@@ -137,15 +137,23 @@ agent の記録を見つけて正本に預ける。`--release` で預けた後�
 {"number":1234,"agent":"claude","session_id":"<id>","exit_code":0,"text":"<最後のメッセージ>","failed":false,"stolen":false}
 ```
 
-- `--cwd` で agent を起こす。agent の環境には `HISHAKU_NUMBER` を足す。
+- `--cwd` で agent を起こす。agent の環境には `HISHAKU_NUMBER` を足し、`HISHAKU_ACCESS_CLIENT_ID` と `HISHAKU_ACCESS_CLIENT_SECRET` を外す。
 - 手元に session_id の記録があれば再開し、無ければ新しいセッションを始める。Codex の session_id は出力の `thread.started` から拾って meta に残す。
 - 失敗したターン（`failed: true`）でも記録は預ける。理由は `reason` に入る。記録を預けられなければ `push_error` に理由を入れる。
 - SIGINT と SIGTERM は agent に渡し、agent が終わってから記録を預ける。
 
-| agent  | 再開                                                       | 新規                                                      |
-| ------ | ---------------------------------------------------------- | --------------------------------------------------------- |
-| claude | `claude -p --output-format json <引数> --resume <id>`      | `claude -p --output-format json <引数> --session-id <id>` |
-| codex  | `codex exec <引数> --json -o <一時ファイル> resume <id> -` | `codex exec <引数> --json -o <一時ファイル> -`            |
+#### `hs turn --agent <claude|codex> [--session <id> [--resume] | --continue] [--cwd <dir>] [--prompt-file <f>] [-- <agent の引数>]`
+
+番号を持たない席（Manager に届かないときを含む）で、Manager を使わずに 1 ターン走らせる。結果の JSON と終了コードは番号のときと同じで、`number` を出さない。
+
+- `--session <id>` だけなら、その ID で新しいセッションを始める（Codex は ID を指定できないので無視する）。`--resume` を付けるとその会話を続ける。
+- `--continue` は作業場所の最新の会話を続ける。
+- どれも無ければ新しいセッションを始める。始めたセッションの ID は結果の `session_id` に入る。
+
+| agent  | 再開                                                  | 最新を続ける（`--continue`）                       | 新規                                                      |
+| ------ | ----------------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------- |
+| claude | `claude -p --output-format json <引数> --resume <id>` | `claude -p --output-format json <引数> --continue` | `claude -p --output-format json <引数> --session-id <id>` |
+| codex  | `codex exec <引数> --json -o <f> resume <id> -`       | `codex exec <引数> --json -o <f> resume --last -`  | `codex exec <引数> --json -o <f> -`                       |
 
 | 終了コード | 意味                                                  |
 | ---------- | ----------------------------------------------------- |
@@ -158,7 +166,7 @@ agent の記録を見つけて正本に預ける。`--release` で預けた後�
 
 #### `hs status --body <本文|-> [--subject <件名>] [--number <number>]`
 
-`hs turn` で走っている agent が、持ち主への質問（ask）とターンの途中の知らせ（status）を席を動かす側に送る。`--body -` で本文を標準入力から読む。番号の既定は `HISHAKU_NUMBER`。待たずに終わるので、ask の後は agent がターンを終え、答えは次のターンの指示として受け取る。
+`hs turn` で走っている agent が、持ち主への質問（ask）とターンの途中の知らせ（status）を席を動かす側に送る。`--body -` で本文を標準入力から読む。番号の既定は `HISHAKU_NUMBER` で、無ければ番号を付けずに送る。番号の無い席は、送り先が `HISHAKU_REPORT_URL` を席ごとに分けて見分ける。待たずに終わるので、ask の後は agent がターンを終え、答えは次のターンの指示として受け取る。
 
 `HISHAKU_REPORT_URL` に次の JSON を POST する。2xx 以外は 1 で終わる。
 

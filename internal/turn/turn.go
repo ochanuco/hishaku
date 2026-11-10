@@ -1,4 +1,4 @@
-// Package turn は hs turn の流れ（借りている番号の agent を非対話で 1 ターン走らせ、記録を預ける）を持つ。
+// Package turn は hs turn の流れ（agent を非対話で 1 ターン走らせ、借りている番号なら記録を預ける）を持つ。
 package turn
 
 import (
@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,22 +21,19 @@ import (
 	"github.com/ochanuco/hishaku/internal/manager"
 )
 
-// Options は hs turn の入力。貸し出しは呼ぶ側が hs prepare で受け、renew で延ばしておく。
-type Options struct {
-	Client     *manager.Client
-	Number     int
-	Holder     string
-	Generation int64
-	Adapter    loan.AdapterFor
+// Agent は agent を 1 ターン走らせる入力。Manager を使わない。
+type Agent struct {
+	Adapter agent.Adapter
+	How     agent.TurnHow
+	// Number は借りている番号。agent に HISHAKU_NUMBER で渡す。0 なら渡さない。
+	Number int
 	// Dir は agent を起こす作業場所。Adapter の cwd と同じにする。
 	Dir string
 	// Prompt はこのターンの指示。agent の標準入力に渡す。
 	Prompt []byte
 	// Extra は agent に渡す追加の引数。
 	Extra []string
-	// StateDir は hs prepare が残した状態の置き場所。
-	StateDir string
-	// Log は hs と agent の標準エラーを書く先。
+	// Log は agent の標準エラーを書く先。
 	Log io.Writer
 	// Signals は子に渡すシグナルの入口。nil なら SIGINT と SIGTERM を受ける。
 	Signals chan os.Signal
@@ -43,7 +41,7 @@ type Options struct {
 
 // Result は hs turn の結果。呼ぶ側は Text を返事として使う。
 type Result struct {
-	Number    int    `json:"number"`
+	Number    int    `json:"number,omitempty"`
 	Agent     string `json:"agent"`
 	SessionID string `json:"session_id"`
 	// ExitCode は agent の終了コード。
@@ -55,46 +53,27 @@ type Result struct {
 	Stolen bool `json:"stolen"`
 }
 
-// Run は agent を 1 ターン走らせ、終わったら記録を預ける。貸し出しは返さない。
-// agent を起こす前の失敗だけを error で返し、起こした後のことは Result に入れる。
-func Run(ctx context.Context, o Options) (*Result, error) {
-	if o.Log == nil {
-		o.Log = io.Discard
+// agentEnv は agent に渡す環境。Manager の service token は agent に要らないので外す。
+func agentEnv(number int) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "HISHAKU_ACCESS_CLIENT_ID" || k == "HISHAKU_ACCESS_CLIENT_SECRET" || k == "HISHAKU_NUMBER" {
+			continue
+		}
+		env = append(env, kv)
 	}
-	if o.Adapter == nil {
-		return nil, errors.New("adapter が指定されていません")
+	if number != 0 {
+		env = append(env, "HISHAKU_NUMBER="+strconv.Itoa(number))
 	}
-	meta, err := o.Client.GetSession(ctx, o.Number)
-	if err != nil {
-		return nil, fmt.Errorf("番号 %d の meta を読めません: %w", o.Number, err)
-	}
-	a, err := o.Adapter(meta.Agent)
-	if err != nil {
-		return nil, err
-	}
-	l := &loan.Loan{Client: o.Client, Number: o.Number, Holder: o.Holder, Generation: o.Generation}
+	return env
+}
 
-	sid := manager.Str(meta.SessionID)
-	resume := false
-	if sid != "" {
-		_, found, err := a.Locate(sid)
-		if err != nil {
-			return nil, err
-		}
-		resume = found
-	} else {
-		id, err := a.NewSessionID()
-		if err != nil {
-			return nil, err
-		}
-		if id != "" {
-			if err := l.SetSessionID(ctx, id); err != nil {
-				return nil, err
-			}
-			sid = id
-		}
+// Exec は agent を 1 ターン走らせて結果を返す。agent を起こす前の失敗だけを error で返す。
+func Exec(a Agent) (*Result, error) {
+	if a.Log == nil {
+		a.Log = io.Discard
 	}
-
 	tmp, err := os.MkdirTemp("", "hs-turn-")
 	if err != nil {
 		return nil, err
@@ -102,15 +81,14 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 	defer os.RemoveAll(tmp)
 	lastMessage := filepath.Join(tmp, "last-message.txt")
 
-	argv := a.TurnCommand(sid, resume, o.Extra, lastMessage)
+	argv := a.Adapter.TurnCommand(a.How, a.Extra, lastMessage)
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = o.Dir
-	// 席の agent が hs ask と hs status でどの番号の報告かを名乗れるようにする。
-	cmd.Env = append(os.Environ(), "HISHAKU_NUMBER="+strconv.Itoa(o.Number))
+	cmd.Dir = a.Dir
+	cmd.Env = agentEnv(a.Number)
 	var stdout bytes.Buffer
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = bytes.NewReader(o.Prompt), &stdout, o.Log
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = bytes.NewReader(a.Prompt), &stdout, a.Log
 
-	sigs := o.Signals
+	sigs := a.Signals
 	if sigs == nil {
 		sigs = make(chan os.Signal, 4)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -133,7 +111,7 @@ loop:
 		}
 	}
 
-	r := &Result{Number: o.Number, Agent: a.Name(), SessionID: sid}
+	r := &Result{Number: a.Number, Agent: a.Adapter.Name(), SessionID: a.How.SessionID}
 	if waitErr != nil {
 		var ee *exec.ExitError
 		if !errors.As(waitErr, &ee) {
@@ -144,23 +122,88 @@ loop:
 			r.ExitCode = 1
 		}
 	}
-	t, err := a.TurnResult(stdout.Bytes(), lastMessage)
+	t, err := a.Adapter.TurnResult(stdout.Bytes(), lastMessage)
 	r.Turn = t
 	if err != nil {
 		r.Failed = true
 		r.Reason = err.Error()
 	} else if r.ExitCode != 0 && !r.Failed {
 		r.Failed = true
-		r.Reason = fmt.Sprintf("%s が終了コード %d で終わりました", a.Name(), r.ExitCode)
+		r.Reason = fmt.Sprintf("%s が終了コード %d で終わりました", a.Adapter.Name(), r.ExitCode)
 	}
 	if t.SessionID != "" {
 		r.SessionID = t.SessionID
+	}
+	return r, nil
+}
+
+// Options は借りている番号で走らせるときの入力。貸し出しは呼ぶ側が hs prepare で受け、renew で延ばしておく。
+type Options struct {
+	Client     *manager.Client
+	Number     int
+	Holder     string
+	Generation int64
+	Adapter    loan.AdapterFor
+	Dir        string
+	Prompt     []byte
+	Extra      []string
+	// StateDir は hs prepare が残した状態の置き場所。
+	StateDir string
+	Log      io.Writer
+	Signals  chan os.Signal
+}
+
+// Run は番号の会話で agent を 1 ターン走らせ、終わったら記録を預ける。貸し出しは返さない。
+// agent を起こす前の失敗だけを error で返し、起こした後のことは Result に入れる。
+func Run(ctx context.Context, o Options) (*Result, error) {
+	if o.Log == nil {
+		o.Log = io.Discard
+	}
+	if o.Adapter == nil {
+		return nil, errors.New("adapter が指定されていません")
+	}
+	meta, err := o.Client.GetSession(ctx, o.Number)
+	if err != nil {
+		return nil, fmt.Errorf("番号 %d の meta を読めません: %w", o.Number, err)
+	}
+	a, err := o.Adapter(meta.Agent)
+	if err != nil {
+		return nil, err
+	}
+	l := &loan.Loan{Client: o.Client, Number: o.Number, Holder: o.Holder, Generation: o.Generation}
+
+	how := agent.TurnHow{SessionID: manager.Str(meta.SessionID)}
+	if how.SessionID != "" {
+		_, found, err := a.Locate(how.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		how.Resume = found
+	} else {
+		id, err := a.NewSessionID()
+		if err != nil {
+			return nil, err
+		}
+		if id != "" {
+			if err := l.SetSessionID(ctx, id); err != nil {
+				return nil, err
+			}
+			how.SessionID = id
+		}
+	}
+
+	r, err := Exec(Agent{
+		Adapter: a, How: how, Number: o.Number, Dir: o.Dir,
+		Prompt: o.Prompt, Extra: o.Extra, Log: o.Log, Signals: o.Signals,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	// 止められた後でも預け終えられるよう、呼ぶ側の ctx とは切り離す。
 	pctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if r.SessionID != "" && r.SessionID != sid {
+	if r.SessionID != "" && r.SessionID != how.SessionID {
 		if err := l.SetSessionID(pctx, r.SessionID); err != nil {
 			fmt.Fprintf(o.Log, "hs: %v\n", err)
 		}

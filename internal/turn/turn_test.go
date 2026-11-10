@@ -30,7 +30,7 @@ func fakeAgent() int {
 	args := os.Args[1:]
 	prompt, _ := io.ReadAll(os.Stdin)
 	cwd, _ := os.Getwd()
-	rec, _ := json.Marshal(record{Args: args, Prompt: string(prompt), Number: os.Getenv("HISHAKU_NUMBER"), Cwd: cwd})
+	rec, _ := json.Marshal(record{Args: args, Prompt: string(prompt), Number: os.Getenv("HISHAKU_NUMBER"), Cwd: cwd, Secret: os.Getenv("HISHAKU_ACCESS_CLIENT_SECRET")})
 	_ = os.WriteFile(os.Getenv("HS_FAKE_RECORD"), rec, 0o600)
 
 	transcript := os.Getenv("HS_FAKE_TRANSCRIPT")
@@ -52,6 +52,9 @@ func fakeAgent() int {
 		return 0
 	}
 	sid := args[len(args)-1]
+	if sid == "--continue" {
+		sid = "latest"
+	}
 	if failed {
 		fmt.Printf(`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"","session_id":%q}`+"\n", sid)
 		return 1
@@ -65,6 +68,7 @@ type record struct {
 	Prompt string   `json:"prompt"`
 	Number string   `json:"number"`
 	Cwd    string   `json:"cwd"`
+	Secret string   `json:"secret"`
 }
 
 type env struct {
@@ -251,5 +255,29 @@ func TestStolenGoesToForks(t *testing.T) {
 	defer e.fake.Lock()()
 	if len(e.s.Forks) != 1 || string(e.s.Transcript) != "a\n" {
 		t.Fatalf("forks = %d transcript = %q", len(e.s.Forks), e.s.Transcript)
+	}
+}
+
+func TestExecWithoutNumber(t *testing.T) {
+	e := setup(t, &managertest.Session{Agent: "claude"})
+	t.Setenv("HS_FAKE_TRANSCRIPT", e.claudePath("latest"))
+	t.Setenv("HISHAKU_NUMBER", "9999")
+	t.Setenv("HISHAKU_ACCESS_CLIENT_SECRET", "secret")
+	a, _ := e.adapter("claude")
+
+	r, err := Exec(Agent{Adapter: a, How: agent.TurnHow{Last: true}, Dir: e.cwd, Prompt: []byte("朝会"), Signals: make(chan os.Signal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Failed || r.Text != "claude の返事" || r.SessionID != "latest" || r.Number != 0 {
+		t.Fatalf("result = %+v", r)
+	}
+	rec := e.record(t)
+	if !slices.Equal(rec.Args, []string{"-p", "--output-format", "json", "--continue"}) || rec.Number != "" || rec.Secret != "" {
+		t.Fatalf("record = %+v", rec)
+	}
+	defer e.fake.Lock()()
+	if len(e.fake.Calls) != 0 {
+		t.Fatalf("Manager を呼びました: %+v", e.fake.Calls)
 	}
 }

@@ -22,14 +22,27 @@ type Turn struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// TurnCommand は 1 ターンを非対話で走らせる argv。指示は標準入力で渡す。
-// resume でなければ sessionID は NewSessionID の値（空文字なら agent が決める）。
-func (c *Claude) TurnCommand(sessionID string, resume bool, extra []string, _ string) []string {
+// TurnHow は 1 ターンをどの会話で走らせるか。
+type TurnHow struct {
+	// SessionID は続ける会話か、新規に使う ID。空文字なら agent が決める。
+	SessionID string
+	// Resume なら SessionID の会話を続ける。
+	Resume bool
+	// Last なら作業場所の最新の会話を続ける。SessionID より後に見る。
+	Last bool
+}
+
+func (c *Claude) TurnCommand(how TurnHow, extra []string, _ string) []string {
 	argv := append([]string{c.Bin, "-p", "--output-format", "json"}, extra...)
-	if resume {
-		return append(argv, "--resume", sessionID)
+	switch {
+	case how.Resume && how.SessionID != "":
+		return append(argv, "--resume", how.SessionID)
+	case how.Last:
+		return append(argv, "--continue")
+	case how.SessionID != "":
+		return append(argv, "--session-id", how.SessionID)
 	}
-	return append(argv, "--session-id", sessionID)
+	return argv
 }
 
 type claudeResult struct {
@@ -65,11 +78,15 @@ func (c *Claude) TurnResult(stdout []byte, _ string) (Turn, error) {
 
 // TurnCommand は exec の option を resume より前に置く。-s などは exec の option なので。
 // 最後のメッセージは --json の出来事から組み立てず、-o で書かせたファイルから読む。
-func (c *Codex) TurnCommand(sessionID string, resume bool, extra []string, lastMessage string) []string {
+// Codex は新規のセッション ID を外から指定できないので、新規では SessionID を使わない。
+func (c *Codex) TurnCommand(how TurnHow, extra []string, lastMessage string) []string {
 	argv := append([]string{c.Bin, "exec"}, extra...)
 	argv = append(argv, "--json", "-o", lastMessage)
-	if resume {
-		argv = append(argv, "resume", sessionID)
+	switch {
+	case how.Resume && how.SessionID != "":
+		argv = append(argv, "resume", how.SessionID)
+	case how.Last:
+		argv = append(argv, "resume", "--last")
 	}
 	return append(argv, "-")
 }

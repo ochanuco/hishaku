@@ -9,10 +9,10 @@ import (
 
 func TestClaudeTurnCommand(t *testing.T) {
 	c := &Claude{Bin: "claude"}
-	if got := c.TurnCommand("sid", true, []string{"--model", "m"}, ""); !slices.Equal(got, []string{"claude", "-p", "--output-format", "json", "--model", "m", "--resume", "sid"}) {
+	if got := c.TurnCommand(TurnHow{SessionID: "sid", Resume: true}, []string{"--model", "m"}, ""); !slices.Equal(got, []string{"claude", "-p", "--output-format", "json", "--model", "m", "--resume", "sid"}) {
 		t.Fatalf("resume = %v", got)
 	}
-	if got := c.TurnCommand("sid", false, nil, ""); !slices.Equal(got, []string{"claude", "-p", "--output-format", "json", "--session-id", "sid"}) {
+	if got := c.TurnCommand(TurnHow{SessionID: "sid"}, nil, ""); !slices.Equal(got, []string{"claude", "-p", "--output-format", "json", "--session-id", "sid"}) {
 		t.Fatalf("new = %v", got)
 	}
 }
@@ -41,10 +41,10 @@ func TestClaudeTurnResultError(t *testing.T) {
 func TestCodexTurnCommand(t *testing.T) {
 	c := &Codex{Bin: "codex"}
 	want := []string{"codex", "exec", "-s", "danger-full-access", "--json", "-o", "/tmp/last", "resume", "sid", "-"}
-	if got := c.TurnCommand("sid", true, []string{"-s", "danger-full-access"}, "/tmp/last"); !slices.Equal(got, want) {
+	if got := c.TurnCommand(TurnHow{SessionID: "sid", Resume: true}, []string{"-s", "danger-full-access"}, "/tmp/last"); !slices.Equal(got, want) {
 		t.Fatalf("resume = %v", got)
 	}
-	if got := c.TurnCommand("", false, nil, "/tmp/last"); !slices.Equal(got, []string{"codex", "exec", "--json", "-o", "/tmp/last", "-"}) {
+	if got := c.TurnCommand(TurnHow{}, nil, "/tmp/last"); !slices.Equal(got, []string{"codex", "exec", "--json", "-o", "/tmp/last", "-"}) {
 		t.Fatalf("new = %v", got)
 	}
 }
@@ -81,5 +81,18 @@ func TestCodexTurnResultErrorEvents(t *testing.T) {
 	broken := []byte(`{"type":"error","message":"認証が切れました"}` + "\n")
 	if got, err := (&Codex{}).TurnResult(broken, none); err != nil || !got.Failed || got.Reason != "認証が切れました" {
 		t.Fatalf("終わらなかったターン: got = %+v err = %v", got, err)
+	}
+}
+
+func TestTurnCommandLast(t *testing.T) {
+	if got := (&Claude{Bin: "claude"}).TurnCommand(TurnHow{Last: true}, nil, ""); !slices.Equal(got, []string{"claude", "-p", "--output-format", "json", "--continue"}) {
+		t.Fatalf("claude = %v", got)
+	}
+	if got := (&Claude{Bin: "claude"}).TurnCommand(TurnHow{}, nil, ""); !slices.Equal(got, []string{"claude", "-p", "--output-format", "json"}) {
+		t.Fatalf("claude new = %v", got)
+	}
+	want := []string{"codex", "exec", "--json", "-o", "/tmp/last", "resume", "--last", "-"}
+	if got := (&Codex{Bin: "codex"}).TurnCommand(TurnHow{Last: true}, nil, "/tmp/last"); !slices.Equal(got, want) {
+		t.Fatalf("codex = %v", got)
 	}
 }

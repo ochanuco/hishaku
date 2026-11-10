@@ -25,7 +25,8 @@ const (
 
 // Report は受付に送る 1 件。
 type Report struct {
-	Number  int    `json:"number"`
+	// Number は番号。番号の無い席では 0 で、JSON には出さない。
+	Number  int    `json:"number,omitempty"`
 	Type    Kind   `json:"type"`
 	Subject string `json:"subject,omitempty"`
 	Body    string `json:"body"`
