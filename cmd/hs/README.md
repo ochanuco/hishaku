@@ -25,6 +25,9 @@ mise use -g github:ochanuco/hishaku
 | `ORCA_CLI_COMMAND`             | `hs open` が使う orca の実行ファイル。既定は `orca`                                   |
 | `CLAUDE_CONFIG_DIR`            | Claude Code の記録の置き場所。既定は `~/.claude`                                      |
 | `CODEX_HOME`                   | Codex の記録の置き場所。既定は `~/.codex`                                             |
+| `HISHAKU_REPORT_URL`           | `hs ask` と `hs status` の送り先。席を動かす側が agent に渡す                         |
+| `HISHAKU_REPORT_TOKEN`         | 送り先に `Authorization: Bearer` で付ける token                                       |
+| `HISHAKU_NUMBER`               | `hs ask` と `hs status` の番号。`hs turn` が agent に渡す                             |
 
 ## コマンド
 
@@ -121,3 +124,44 @@ agent の記録を見つけて正本に預ける。`--release` で預けた後�
 | 0          | 頼んだ                               |
 | 5          | 誰も借りていない                     |
 | 1          | そのほか（自分が持ち主のときを含む） |
+
+### agent を非対話で 1 ターンずつ走らせるとき
+
+端末を持たない呼び手（docker01 の Working など）は、`hs prepare` で借りて `hs renew` で延ばしながら、指示が来るたびに `hs turn` で 1 ターンずつ走らせる。終わったら `hs push --release` で返す。
+
+#### `hs turn <number> --generation N [--holder <id>] [--cwd <dir>] [--prompt-file <f>] [-- <agent の引数>]`
+
+指示（`--prompt-file`、無ければ標準入力）を agent の標準入力に渡して非対話で 1 ターン走らせ、終わったら記録を預ける。貸し出しは返さず、延ばしもしない。結果は標準出力に 1 行の JSON で出す。agent の標準エラーは hs の標準エラーにそのまま出す。
+
+```text
+{"number":1234,"agent":"claude","session_id":"<id>","exit_code":0,"text":"<最後のメッセージ>","failed":false,"stolen":false}
+```
+
+- `--cwd` で agent を起こす。agent の環境には `HISHAKU_NUMBER` を足す。
+- 手元に session_id の記録があれば再開し、無ければ新しいセッションを始める。Codex の session_id は出力の `thread.started` から拾って meta に残す。
+- 失敗したターン（`failed: true`）でも記録は預ける。理由は `reason` に入る。記録を預けられなければ `push_error` に理由を入れる。
+- SIGINT と SIGTERM は agent に渡し、agent が終わってから記録を預ける。
+
+| agent  | 再開                                                       | 新規                                                      |
+| ------ | ---------------------------------------------------------- | --------------------------------------------------------- |
+| claude | `claude -p --output-format json <引数> --resume <id>`      | `claude -p --output-format json <引数> --session-id <id>` |
+| codex  | `codex exec <引数> --json -o <一時ファイル> resume <id> -` | `codex exec <引数> --json -o <一時ファイル> -`            |
+
+| 終了コード | 意味                                                  |
+| ---------- | ----------------------------------------------------- |
+| 0          | ターンが成功した                                      |
+| 4          | ターンが失敗した。JSON は出す                         |
+| 3          | 貸し出しは他に取られていた。記録は forks に預けてある |
+| 1          | agent を起こす前の失敗（JSON は出さない）             |
+
+#### `hs ask --body <本文|-> [--subject <件名>] [--number <number>]`
+
+#### `hs status --body <本文|-> [--subject <件名>] [--number <number>]`
+
+`hs turn` で走っている agent が、持ち主への質問（ask）とターンの途中の知らせ（status）を席を動かす側に送る。`--body -` で本文を標準入力から読む。番号の既定は `HISHAKU_NUMBER`。待たずに終わるので、ask の後は agent がターンを終え、答えは次のターンの指示として受け取る。
+
+`HISHAKU_REPORT_URL` に次の JSON を POST する。2xx 以外は 1 で終わる。
+
+```text
+{"number":1234,"type":"ask","subject":"<件名>","body":"<本文>"}
+```
